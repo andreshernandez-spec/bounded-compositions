@@ -48,5 +48,9 @@ if not meson.is_subproject()
                  '-DBCOMP_VERSION_STRING="' + meson.project_version() + '"'],
       dependencies: [threads, catch2])
     test('bounded_compositions_limit_tests', limit_tests)
+    fuzz_smoke = executable('bounded_compositions_fuzz_smoke',
+      'tests/fuzz/fuzz_properties.cpp', 'tests/fuzz/fuzz_driver.cpp',
+      dependencies: bounded_compositions_dep)
+    test('fuzz_smoke', fuzz_smoke, timeout: 300)
   endif
 endif

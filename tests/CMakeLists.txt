@@ -42,3 +42,16 @@ if(Python3_FOUND)
     COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/tools/check_kernel.py
             ${PROJECT_SOURCE_DIR}/include/bounded_compositions/kernel)
 endif()
+
+# Fuzz properties: a seeded smoke run everywhere, real libFuzzer with Clang.
+option(BCOMP_FUZZ "Build the libFuzzer target (Clang only)" OFF)
+if(BCOMP_FUZZ)
+  add_executable(bounded_compositions_fuzz fuzz/fuzz_properties.cpp)
+  target_compile_options(bounded_compositions_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_link_options(bounded_compositions_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_link_libraries(bounded_compositions_fuzz PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
+else()
+  add_executable(bounded_compositions_fuzz_smoke fuzz/fuzz_properties.cpp fuzz/fuzz_driver.cpp)
+  target_link_libraries(bounded_compositions_fuzz_smoke PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
+  add_test(NAME fuzz_smoke COMMAND bounded_compositions_fuzz_smoke)
+endif()

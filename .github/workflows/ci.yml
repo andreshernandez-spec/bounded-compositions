@@ -110,3 +110,22 @@ jobs:
           meson setup builddir
           meson compile -C builddir
           meson test -C builddir
+
+  fuzz:
+    name: "libFuzzer (60 s)"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
+          -DBCOMP_FUZZ=ON
+      - name: Build
+        run: cmake --build build --target bounded_compositions_fuzz --parallel
+      - name: Fuzz
+        run: |
+          mkdir -p corpus
+          ./build/tests/bounded_compositions_fuzz -max_total_time=60 -max_len=256 corpus
