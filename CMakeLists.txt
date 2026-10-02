@@ -32,6 +32,8 @@ target_compile_features(bounded_compositions_kernel INTERFACE cxx_std_17)
 
 # Host core and public API.
 add_library(bounded_compositions
+  src/natural.cpp
+  src/space.cpp
   src/version.cpp)
 add_library(bounded_compositions::bounded_compositions ALIAS bounded_compositions)
 target_link_libraries(bounded_compositions
@@ -66,4 +68,10 @@ endif()
 if(BCOMP_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+option(BCOMP_BUILD_BENCH "Build the benchmarks" OFF)
+if(BCOMP_BUILD_BENCH)
+  add_executable(bounded_compositions_unrank_bench bench/unrank_bench.cpp)
+  target_link_libraries(bounded_compositions_unrank_bench PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
 endif()
