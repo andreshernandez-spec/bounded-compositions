@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest compilers SciPy supports.
+          - { name: "GCC 9, C++17", os: ubuntu-22.04, cxx: g++-9, std: 17, apt: g++-9 }
+          - { name: "Clang 14, C++17", os: ubuntu-22.04, cxx: clang++-14, std: 17 }
+          # Current compilers, and the newer standards.
+          - { name: "GCC 14, C++17", os: ubuntu-24.04, cxx: g++-14, std: 17 }
+          - { name: "Clang 18, C++17", os: ubuntu-24.04, cxx: clang++-18, std: 17 }
+          - { name: "GCC 14, C++20", os: ubuntu-24.04, cxx: g++-14, std: 20 }
+          - { name: "Clang 18, C++23", os: ubuntu-24.04, cxx: clang++-18, std: 23 }
+          - { name: "AppleClang, C++17", os: macos-latest, cxx: clang++, std: 17 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler
+        if: matrix.apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+          -DBCOMP_WERROR=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  msvc:
+    name: ${{ matrix.name }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "MSVC 2022, C++17", toolset: v143 }
+          # VS2019 toolset, the oldest MSVC SciPy supports.
+          - { name: "MSVC 2019 toolset, C++17", toolset: v142 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -T ${{ matrix.toolset }}
+          -DBCOMP_WERROR=ON
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+      - name: Test
+        run: ctest --test-dir build -C Debug --output-on-failure
+
+  sanitizers:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "ASan + UBSan"
+            flags: "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+          - name: "TSan"
+            flags: "-fsanitize=thread"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lower ASLR entropy for TSan
+        if: matrix.name == 'TSan'
+        # TSan in Clang 18 cannot map its shadow memory with the kernel's
+        # default mmap randomisation.
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+          -DBCOMP_WERROR=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  meson:
+    name: "Meson build"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install meson
+        run: python3 -m pip install --user meson ninja
+      - name: Build and test
+        run: |
+          meson setup builddir
+          meson compile -C builddir
+          meson test -C builddir

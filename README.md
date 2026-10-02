@@ -1,0 +1,37 @@
+# bounded-compositions
+
+Count, rank, enumerate and sample bounded integer compositions:
+
+    { x in Z^n : x[0] + ... + x[n-1] = K,  lo[i] <= x[i] <= hi[i] }
+
+The goal is sampling that can be extended in place (the first N points are
+well spread for every N, and asking for more continues the same sequence), and
+that splits into regions that can be sampled independently.
+
+**Status: pre-alpha. Nothing usable yet.**
+
+## Design
+
+- C++17, no third-party dependencies.
+- A compiled host library, plus a small header-only kernel layer for the
+  per-point work, kept compatible with GPU compilation
+  ([docs/kernel-rules.md](docs/kernel-rules.md)).
+- Thread-safe by construction: shared data is immutable, and point `i` of a
+  sequence depends only on the space, the seed and `i`.
+
+## Build
+
+```sh
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+```
+
+Presets: `dev`, `release`, `asan-ubsan`, `tsan`, `cxx20`, `cxx23`. Tests use
+Catch2 v3; it is fetched automatically if not installed.
+
+Meson consumers can use the `bounded-compositions` dependency (`bounded_compositions_dep`).
+
+## License
+
+BSD-3-Clause.
