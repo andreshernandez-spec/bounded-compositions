@@ -18,6 +18,7 @@ add_executable(bounded_compositions_tests
   test_executor.cpp
   test_limbs.cpp
   test_natural.cpp
+  test_region.cpp
   test_sequence.cpp
   test_smoke.cpp
   test_space.cpp)
@@ -31,6 +32,7 @@ add_executable(bounded_compositions_limit_tests
   test_limits.cpp
   ${PROJECT_SOURCE_DIR}/src/executor.cpp
   ${PROJECT_SOURCE_DIR}/src/natural.cpp
+  ${PROJECT_SOURCE_DIR}/src/region.cpp
   ${PROJECT_SOURCE_DIR}/src/sequence.cpp
   ${PROJECT_SOURCE_DIR}/src/space.cpp
   ${PROJECT_SOURCE_DIR}/src/version.cpp)
