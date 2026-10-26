@@ -72,6 +72,9 @@ struct sequence_data {
     space walk;
     std::vector<std::int32_t> prefix;
     sobol_tables sobol;
+    // Points come from decoding fractions: coordinate sequences, and iid
+    // sequences over a logarithmic space (Philox fractions).
+    bool decoded = false;
 
     explicit sequence_data(const space& s) : dom(s), walk(s) {}
 
@@ -104,17 +107,25 @@ struct sequence_data {
         k::limbs_add(out, rank_limbs, base.limbs(), as_int(base.limb_count()), out, rank_limbs);
     }
 
-    void write_coordinate_points(std::uint64_t first, std::uint64_t count,
-                                 std::int32_t* out) const {
+    void write_decoded_points(std::uint64_t first, std::uint64_t count, std::int32_t* out) const {
         const k::space_view wv = walk.view();
         const k::sobol_view sv = sobol.view();
         const std::size_t n = dom.parts();
         const std::size_t d = prefix.size();
-        std::vector<k::limb> u(static_cast<std::size_t>(sv.dims) + 1);
+        const std::size_t dims = walk.parts() - 1;
+        std::vector<k::limb> u(dims + 4);
         for (std::uint64_t p = 0; p < count; ++p) {
             std::int32_t* x = out + p * n;
             std::copy(prefix.begin(), prefix.end(), x);
-            k::sobol_point(sv, first + p, u.data());
+            if (kind == sequence_kind::coordinate) {
+                k::sobol_point(sv, first + p, u.data());
+            } else {  // iid over a logarithmic space: Philox fractions
+                for (std::size_t w = 0; w < dims; w += 4) {
+                    const k::limb counter[4] = {first + p, 0, static_cast<k::limb>(w / 4), 0};
+                    const k::philox_block b = k::philox4x64_10(counter, key);
+                    for (std::size_t j = 0; j < 4; ++j) u[w + j] = b.v[j];
+                }
+            }
             if (k::decode(wv, u.data(), x + d) != k::status::ok) {
                 throw std::logic_error("bounded_compositions: decode failed in a sequence");
             }
@@ -122,8 +133,8 @@ struct sequence_data {
     }
 
     void write_points(std::uint64_t first, std::uint64_t count, std::int32_t* out) const {
-        if (kind == sequence_kind::coordinate) {
-            write_coordinate_points(first, count, out);
+        if (decoded) {
+            write_decoded_points(first, count, out);
             return;
         }
         const k::space_view sv = dom.view();
@@ -151,6 +162,21 @@ namespace {
 // r == nullptr means the whole space.
 std::shared_ptr<detail::sequence_data> base_data(const space& s, const region* r,
                                                  sequence_kind kind, std::uint64_t seed) {
+    if (s.counting_mode() == counting::logarithmic) {
+        // No exact counts: only point-by-point decoding over the whole space.
+        if (kind == sequence_kind::rank || kind == sequence_kind::scaled_rank || r != nullptr) {
+            throw std::logic_error(
+                "bounded_compositions::sequence: rank sequences and regions need exact "
+                "counting; a logarithmic space supports coordinate and iid sequences");
+        }
+        auto d = std::make_shared<detail::sequence_data>(s);
+        d->kind = kind;
+        d->seed = seed;
+        d->decoded = true;
+        d->span = natural(s.empty() ? 0 : 1);  // only its emptiness is used
+        d->capacity = s.empty() ? 0 : std::numeric_limits<std::uint64_t>::max();
+        return d;
+    }
     if (r != nullptr && r->end() > s.size()) {
         throw std::out_of_range("bounded_compositions::sequence: region ends at rank " +
                                 r->end().to_string() + ", past the size " + s.size().to_string());
@@ -286,10 +312,10 @@ void sequence::points(std::uint64_t begin, std::uint64_t count, std::int32_t* ou
 
 natural sequence::rank_at(std::uint64_t i) const {
     check_range(i, 1, data_->capacity);
-    if (data_->kind == sequence_kind::coordinate) {
+    if (data_->decoded) {
         std::vector<std::int32_t> x(data_->dom.parts());
-        data_->write_coordinate_points(i, 1, x.data());
-        return data_->dom.rank(x.data());
+        data_->write_decoded_points(i, 1, x.data());
+        return data_->dom.rank(x.data());  // throws for a logarithmic space
     }
     std::vector<k::limb> rank(static_cast<std::size_t>(data_->rank_limbs));
     const std::uint64_t t =
@@ -366,6 +392,7 @@ std::shared_ptr<detail::sequence_data> make_coordinate(const space& s, const reg
             "bounded_compositions::coordinate_sequence: the region must be a subtree");
     }
     auto d = base_data(s, r, sequence_kind::coordinate, scramble ? seed : 0);
+    d->decoded = true;
     if (d->span.is_zero()) return d;
     if (r != nullptr && !r->prefix().empty()) {
         d->prefix = r->prefix();

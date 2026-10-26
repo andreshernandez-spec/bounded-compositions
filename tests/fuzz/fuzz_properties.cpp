@@ -1,6 +1,7 @@
 // Property fuzzer for natural and space. Built with libFuzzer
 // (BCOMP_FUZZ=ON, Clang) or with fuzz_driver.cpp as a plain test.
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -171,6 +172,23 @@ void check_space(reader& in) {
     coord.points(seed % 1000, 64, cpts.data());
     for (std::size_t i = 0; i < 64; ++i) {
         expect(s.contains(cpts.data() + i * n), "coordinate points are compositions");
+    }
+
+    // The logarithmic mode: same emptiness, close sizes, valid decodes, and
+    // encode inverts decode.
+    const bounded_compositions::space logs(total, lo, hi,
+                                           bounded_compositions::counting::logarithmic);
+    expect(!logs.empty(), "logarithmic space is non-empty too");
+    expect(std::abs(logs.log_size() - s.log_size()) <= 1e-11 * std::max(1.0, s.log_size()),
+           "logarithmic size matches the exact one");
+    for (std::size_t j = 0; j + 1 < n; ++j) fixed[j] = in.word();
+    bounded_compositions::decode(logs, fixed.data(), back.data());
+    expect(logs.contains(back.data()), "logarithmic decode gives a composition");
+    for (std::uint64_t i = 0; i < count; i += stride) {
+        const std::int32_t* xi = pts.data() + i * n;
+        bounded_compositions::encode(logs, xi, unit.data());
+        bounded_compositions::decode(logs, unit.data(), back.data());
+        expect(std::equal(back.begin(), back.end(), xi), "logarithmic decode(encode(x)) == x");
     }
 }
 

@@ -44,6 +44,7 @@ if not meson.is_subproject()
       'tests/test_coordinate.cpp',
       'tests/test_executor.cpp',
       'tests/test_limbs.cpp',
+      'tests/test_log_counting.cpp',
       'tests/test_natural.cpp',
       'tests/test_region.cpp',
       'tests/test_sequence.cpp',

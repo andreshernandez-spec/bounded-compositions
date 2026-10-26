@@ -33,7 +33,15 @@ struct prefix_place {
 };
 
 // Throws std::invalid_argument if the prefix is not the start of some composition.
+void require_exact(const space& s, const char* what) {
+    if (s.counting_mode() == counting::logarithmic) {
+        throw std::logic_error(std::string("bounded_compositions::") + what +
+                               ": regions need exact counting; this space counts in logarithms");
+    }
+}
+
 prefix_place place_prefix(const space& s, const std::vector<std::int32_t>& prefix) {
+    require_exact(s, "subtree");
     const k::space_view v = s.view();
     const std::size_t n = s.parts();
     if (prefix.size() > n) {
@@ -79,6 +87,7 @@ region::region(natural begin, natural end, std::vector<std::int32_t> prefix, boo
       subtree_(subtree) {}
 
 region interval(const space& s, const natural& begin, const natural& end) {
+    require_exact(s, "interval");
     if (begin > end || end > s.size()) {
         throw std::out_of_range("bounded_compositions::interval: [" + begin.to_string() + ", " +
                                 end.to_string() + ") is not within [0, " + s.size().to_string() +

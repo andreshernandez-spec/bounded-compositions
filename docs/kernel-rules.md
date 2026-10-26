@@ -17,7 +17,11 @@ of the library.
 3. No recursion. Device stacks are small and fixed; every walk is a loop.
 4. Includes: `<cstdint>`, `<cstddef>`, `<climits>`, and other kernel headers.
    The only `std::` names allowed are the fixed-width integer types,
-   `size_t`, `ptrdiff_t`, `intptr_t` and `uintptr_t`.
+   `size_t`, `ptrdiff_t`, `intptr_t` and `uintptr_t`. The one exception is
+   `config.hpp`, which includes `<cmath>` and wraps `std::exp`, `std::log`,
+   `std::log1p` and `std::expm1` in the macros `BCOMP_EXP`, `BCOMP_LOG`,
+   `BCOMP_LOG1P` and `BCOMP_EXPM1` for the logarithmic counting mode. Other
+   kernel headers use the macros, which a GPU build can redefine.
 5. Inputs and outputs are views: structs of pointers, sizes and strides that
    are trivially copyable, so they can be copied to a device as they are.
 6. Scratch space has a compile-time bound, `kernel::max_limbs` (set by

@@ -1,5 +1,6 @@
 #include "bounded_compositions/codec.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -39,6 +40,50 @@ std::uint64_t to_fraction(double u, int i) {
     return static_cast<std::uint64_t>(std::ldexp(u, 64));
 }
 
+// Log mode: centre of each part's cell as a double, from the same two-sided
+// window sums decode uses.
+std::vector<double> encode_log(const space& s, const std::int32_t* x) {
+    const k::space_view v = s.view();
+    std::vector<double> u(static_cast<std::size_t>(dims_of(s)));
+    std::int32_t left = v.total;
+    for (int i = 0; i < dims_of(s); ++i) {
+        const int row = i + 1;
+        const std::int32_t y = x[i] - v.lo[i];
+        const std::int32_t m = std::min(v.cap[i], left);
+        int side = 0;
+        const double whole = k::log_window(v, row, left - m, left, &side);
+        // Mass of the values below y: the window [left - y + 1, left] of the row.
+        double before = k::log_zero;
+        if (y > 0) {
+            before = side == 0 ? k::log_sub(k::log_prefix_at(v, row, left),
+                                            k::log_prefix_at(v, row, left - y))
+                               : k::log_sub(k::log_suffix_at(v, row, left - y + 1),
+                                            k::log_suffix_at(v, row, left + 1));
+        }
+        const double width = k::log_window(v, row, left - y, left - y, nullptr);
+        const double centre = k::log_add(before, width - std::log(2.0));
+        double f = std::exp(centre - whole);
+        if (!(f >= 0.0)) f = 0.0;
+        if (f >= 1.0) f = std::nextafter(1.0, 0.0);
+        u[static_cast<std::size_t>(i)] = f;
+        left -= y;
+    }
+    return u;
+}
+
+void check_round_trip(const space& s, const std::int32_t* x, const std::vector<std::int32_t>& back,
+                      const char* precision) {
+    for (std::size_t i = 0; i < back.size(); ++i) {
+        if (back[i] != x[i]) {
+            throw std::domain_error(
+                std::string("bounded_compositions::encode: the composition's cell "
+                            "is narrower than ") +
+                precision + " can represent");
+        }
+    }
+    (void)s;
+}
+
 }  // namespace
 
 void decode(const space& s, const std::uint64_t* u, std::int32_t* out) {
@@ -57,6 +102,16 @@ void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {
     if (!s.contains(x)) {
         throw std::invalid_argument(
             "bounded_compositions::encode: not a composition of this space");
+    }
+    if (s.counting_mode() == counting::logarithmic) {
+        const std::vector<double> f = encode_log(s, x);
+        for (std::size_t i = 0; i < f.size(); ++i) {
+            u[i] = static_cast<std::uint64_t>(std::ldexp(f[i], 64));
+        }
+        std::vector<std::int32_t> back(s.parts());
+        decode(s, u, back.data());
+        check_round_trip(s, x, back, "a logarithmic space");
+        return;
     }
     const k::space_view v = s.view();
     std::int32_t left = v.total;
@@ -93,6 +148,18 @@ void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {
 }
 
 void encode(const space& s, const std::int32_t* x, double* u) {
+    if (s.counting_mode() == counting::logarithmic) {
+        if (!s.contains(x)) {
+            throw std::invalid_argument(
+                "bounded_compositions::encode: not a composition of this space");
+        }
+        const std::vector<double> f = encode_log(s, x);
+        std::copy(f.begin(), f.end(), u);
+        std::vector<std::int32_t> back(s.parts());
+        decode(s, u, back.data());
+        check_round_trip(s, x, back, "a logarithmic space");
+        return;
+    }
     std::vector<std::uint64_t> fixed(static_cast<std::size_t>(dims_of(s)));
     encode(s, x, fixed.data());
     for (std::size_t i = 0; i < fixed.size(); ++i) {

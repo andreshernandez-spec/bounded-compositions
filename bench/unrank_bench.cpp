@@ -49,7 +49,7 @@ int main() {
         const auto t1 = std::chrono::steady_clock::now();
         const double ns = std::chrono::duration<double, std::nano>(t1 - t0).count() / count;
         std::printf("%8zu %10d %12d %14.1f %12.1f   (checksum %lld)\n", parts, total,
-                    s.size().bit_length(), static_cast<double>(s.table_bytes()) / (1 << 20), ns,
-                    static_cast<long long>(checksum));
+                    s.size().bit_length(), static_cast<double>(s.table_bytes()) / (1024.0 * 1024.0),
+                    ns, static_cast<long long>(checksum));
     }
 }
