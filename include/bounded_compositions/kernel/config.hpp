@@ -3,16 +3,34 @@
 // Everything under bounded_compositions/kernel/ must be able to compile as GPU device
 // code later, so it follows docs/kernel-rules.md: no allocation, exceptions,
 // RTTI, virtual calls, recursion or mutable static state, and no standard
-// library beyond <cstdint>, <cstddef> and <climits>.
+// library beyond <cstdint>, <cstddef>, <climits>, and the <cmath> functions
+// wrapped by the BCOMP_EXP / BCOMP_LOG / BCOMP_LOG1P / BCOMP_EXPM1 macros below.
 #ifndef BCOMP_KERNEL_CONFIG_HPP
 #define BCOMP_KERNEL_CONFIG_HPP
 
+#include <cmath>
 #include <cstdint>
 
 // A GPU build defines BCOMP_KERNEL as `__host__ __device__ inline` (or the SYCL
 // equivalent) before including any kernel header.
 #ifndef BCOMP_KERNEL
 #define BCOMP_KERNEL inline
+#endif
+
+// Floating-point functions used by the logarithmic counting mode. A GPU build
+// that cannot call the std:: versions defines these before including any
+// kernel header.
+#ifndef BCOMP_EXP
+#define BCOMP_EXP(x) std::exp(x)
+#endif
+#ifndef BCOMP_LOG
+#define BCOMP_LOG(x) std::log(x)
+#endif
+#ifndef BCOMP_LOG1P
+#define BCOMP_LOG1P(x) std::log1p(x)
+#endif
+#ifndef BCOMP_EXPM1
+#define BCOMP_EXPM1(x) std::expm1(x)
 #endif
 
 // Upper bound on the 64-bit limbs of any count or rank. Kernels size their

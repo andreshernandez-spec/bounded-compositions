@@ -12,6 +12,11 @@ import re
 import sys
 
 ALLOWED_SYSTEM_INCLUDES = {"cstdint", "cstddef", "climits"}
+# config.hpp alone wraps the floating-point functions of <cmath> in macros
+# (BCOMP_EXP and friends) that a GPU build can redefine.
+CONFIG_HEADER = "config.hpp"
+CONFIG_INCLUDES = {"cmath"}
+CONFIG_STD = {"exp", "log", "log1p", "expm1"}
 ALLOWED_LOCAL_INCLUDE = re.compile(r"^bounded_compositions/kernel/[a-z0-9_]+\.hpp$")
 ALLOWED_STD = {
     "int8_t", "int16_t", "int32_t", "int64_t",
@@ -79,7 +84,8 @@ def check_file(path):
         if not m:
             continue
         kind, name = m.groups()
-        if kind == "<" and name not in ALLOWED_SYSTEM_INCLUDES:
+        allowed = ALLOWED_SYSTEM_INCLUDES | (CONFIG_INCLUDES if path.name == CONFIG_HEADER else set())
+        if kind == "<" and name not in allowed:
             problems.append((lineno, f"include <{name}> is outside the allowlist"))
         if kind == '"' and not ALLOWED_LOCAL_INCLUDE.match(name):
             problems.append((lineno, f'include "{name}" is not a kernel header'))
@@ -93,8 +99,9 @@ def check_file(path):
         for m in re.finditer(r"\bstatic\b(?!_)\s*(\w*)", line):
             if m.group(1) != "constexpr":
                 problems.append((lineno, "'static' other than 'static constexpr'"))
+        allowed_std = ALLOWED_STD | (CONFIG_STD if path.name == CONFIG_HEADER else set())
         for m in re.finditer(r"\bstd\s*::\s*(\w+)", line):
-            if m.group(1) not in ALLOWED_STD:
+            if m.group(1) not in allowed_std:
                 problems.append((lineno, f"std::{m.group(1)} (standard library)"))
     return problems
 

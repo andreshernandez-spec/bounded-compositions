@@ -1,6 +1,7 @@
 #include "bounded_compositions/space.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,9 @@ struct space_data {
     std::vector<std::int32_t> row_limbs;
     std::vector<k::limb> table;
     natural size;
+    counting mode = counting::exact;
+    std::vector<double> log_prefix, log_suffix;  // logarithmic mode only
+    double log_size = -std::numeric_limits<double>::infinity();
     k::space_view view{};
     // A subspace points into its parent's arrays and keeps the parent alive.
     std::shared_ptr<const space_data> parent;
@@ -36,6 +40,26 @@ struct space_data {
 namespace {
 
 int as_int(std::size_t n) { return static_cast<int>(n); }
+
+// Natural logarithm of a positive natural.
+double log_of(const natural& x) {
+    const int bits = x.bit_length();
+    if (bits <= 1000) return std::log(x.to_double());
+    // Keep the top 64 bits: x = top * 2^shift with top in [2^63, 2^64).
+    const int shift = bits - 64;
+    const k::limb* l = x.limbs();
+    const int word = shift / 64, bit = shift % 64;
+    k::limb top = l[word] >> bit;
+    if (bit != 0) top |= l[word + 1] << (64 - bit);
+    return std::log(static_cast<double>(top)) + shift * std::log(2.0);
+}
+
+void require_exact(const detail::space_data& d, const char* what) {
+    if (d.mode == counting::logarithmic) {
+        throw std::logic_error(std::string("bounded_compositions::space::") + what +
+                               ": needs exact counting; this space counts in logarithms");
+    }
+}
 
 // Prefix sums of the counting table, one row per part plus the empty suffix.
 // Row i is computed from row i+1 one limb wider than row i+1 (an entry is a
@@ -122,14 +146,57 @@ void build_table(detail::space_data& d, std::int32_t shifted_total) {
     }
 }
 
+// Logarithmic table: for each row, log P and log S over k = 0..total + 1.
+// N[i][k] is the window [k - min(cap, k), k] of row i + 1, summed from the side
+// with less mass outside the window (see log_window in walk.hpp).
+void build_log_table(detail::space_data& d, std::int32_t shifted_total) {
+    const std::size_t n = d.cap.size();
+    const std::size_t stride = static_cast<std::size_t>(shifted_total) + 2;
+    d.log_prefix.assign((n + 1) * stride, k::log_zero);
+    d.log_suffix.assign((n + 1) * stride, k::log_zero);
+    double* P = d.log_prefix.data();
+    double* S = d.log_suffix.data();
+    // Row n: N[n][0] = 1, N[n][k > 0] = 0.
+    for (std::size_t kk = 0; kk <= static_cast<std::size_t>(shifted_total); ++kk)
+        P[n * stride + kk] = 0.0;
+    S[n * stride] = 0.0;
+    std::vector<double> count(stride);
+    for (std::size_t i = n; i-- > 0;) {
+        const double* Pn = P + (i + 1) * stride;
+        const double* Sn = S + (i + 1) * stride;
+        const std::int32_t cap = d.cap[i];
+        for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
+            const std::int32_t lo = kk - std::min(cap, kk);
+            const double below = lo > 0 ? Pn[lo - 1] : k::log_zero;
+            const double above = Sn[kk + 1];
+            count[static_cast<std::size_t>(kk)] =
+                below <= above ? k::log_sub(Pn[kk], below) : k::log_sub(Sn[lo], above);
+        }
+        double run = k::log_zero;
+        for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
+            run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
+            P[i * stride + static_cast<std::size_t>(kk)] = run;
+        }
+        run = k::log_zero;
+        for (std::int32_t kk = shifted_total; kk >= 0; --kk) {
+            run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
+            S[i * stride + static_cast<std::size_t>(kk)] = run;
+        }
+    }
+    // log N[0][total] = log S[0][total], since nothing lies above the total.
+    d.log_size = S[static_cast<std::size_t>(shifted_total)];
+}
+
 std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const std::int32_t* lower,
-                                                    const std::int32_t* upper, std::size_t parts) {
+                                                    const std::int32_t* upper, std::size_t parts,
+                                                    counting mode) {
     if (parts == 0) throw std::invalid_argument("bounded_compositions::space: no parts");
     if (parts > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max() - 1)) {
         throw std::invalid_argument("bounded_compositions::space: too many parts");
     }
     auto d = std::make_shared<detail::space_data>();
     d->total = total;
+    d->mode = mode;
     d->lower.assign(lower, lower + parts);
     d->upper.assign(upper, upper + parts);
     d->cap.resize(parts);
@@ -168,15 +235,22 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
         d->cap_suffix[i] = static_cast<std::int32_t>(std::min<std::int64_t>(run, shifted_total));
     }
 
-    if (feasible) build_table(*d, shifted_total);
+    const bool logarithmic = mode == counting::logarithmic;
+    if (feasible && logarithmic) build_log_table(*d, shifted_total);
+    if (feasible && !logarithmic) build_table(*d, shifted_total);
 
     k::space_view& v = d->view;
+    v.feasible = feasible ? 1 : 0;
+    v.log_mode = logarithmic ? 1 : 0;
+    v.log_prefix = logarithmic && feasible ? d->log_prefix.data() : nullptr;
+    v.log_suffix = logarithmic && feasible ? d->log_suffix.data() : nullptr;
+    v.log_stride = static_cast<std::int64_t>(shifted_total) + 2;
     v.n = static_cast<std::int32_t>(parts);
     v.total = shifted_total;
     v.lo = d->lower.data();
     v.cap = d->cap.data();
     v.cap_suffix = d->cap_suffix.data();
-    if (feasible) {
+    if (feasible && !logarithmic) {
         v.table = d->table.data();
         v.row_offset = d->row_offset.data();
         v.row_limbs = d->row_limbs.data();
@@ -189,6 +263,7 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
         v.size = nullptr;
         v.size_limbs = 0;
     }
+    if (feasible && !logarithmic) d->log_size = log_of(d->size);
     return d;
 }
 
@@ -202,30 +277,38 @@ void check_length(std::size_t got, std::size_t want) {
 }  // namespace
 
 space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
-             const std::vector<std::int32_t>& upper) {
+             const std::vector<std::int32_t>& upper, counting mode) {
     if (lower.size() != upper.size()) {
         throw std::invalid_argument(
             "bounded_compositions::space: lower and upper differ in length");
     }
-    data_ = make_data(total, lower.data(), upper.data(), lower.size());
+    data_ = make_data(total, lower.data(), upper.data(), lower.size(), mode);
 }
 
 space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
-             std::size_t parts)
-    : data_(make_data(total, lower, upper, parts)) {}
+             std::size_t parts, counting mode)
+    : data_(make_data(total, lower, upper, parts, mode)) {}
 
 std::size_t space::parts() const noexcept { return data_->lower.size(); }
 std::int32_t space::total() const noexcept { return data_->total; }
 const std::vector<std::int32_t>& space::lower() const noexcept { return data_->lower; }
 const std::vector<std::int32_t>& space::upper() const noexcept { return data_->upper; }
-const natural& space::size() const noexcept { return data_->size; }
-bool space::empty() const noexcept { return data_->size.is_zero(); }
+counting space::counting_mode() const noexcept { return data_->mode; }
+
+const natural& space::size() const {
+    require_exact(*data_, "size");
+    return data_->size;
+}
+
+double space::log_size() const noexcept { return data_->log_size; }
+bool space::empty() const noexcept { return data_->view.feasible == 0; }
 k::space_view space::view() const noexcept { return data_->view; }
 
 std::size_t space::table_bytes() const noexcept {
     const detail::space_data* d = data_.get();
     while (d->parent) d = d->parent.get();
-    return d->table.size() * sizeof(k::limb);
+    return d->table.size() * sizeof(k::limb) +
+           (d->log_prefix.size() + d->log_suffix.size()) * sizeof(double);
 }
 
 space::space(std::shared_ptr<const detail::space_data> data) : data_(std::move(data)) {}
@@ -251,8 +334,34 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
         left -= static_cast<std::int32_t>(y);
         prefix_sum += prefix[i];
     }
-    // size = N[d][left] = P[d][left] - P[d][left - 1]
     const int row = static_cast<int>(d);
+    if (data_->mode == counting::logarithmic) {
+        const double log_count = k::log_window(v, row, left, left, nullptr);
+        if (k::log_is_zero(log_count)) {
+            throw std::invalid_argument(
+                "bounded_compositions::space::subspace: prefix has no completion");
+        }
+        auto sub = std::make_shared<detail::space_data>();
+        sub->parent = data_;
+        sub->mode = counting::logarithmic;
+        sub->total = static_cast<std::int32_t>(data_->total - prefix_sum);
+        sub->lower.assign(data_->lower.begin() + static_cast<std::ptrdiff_t>(d),
+                          data_->lower.end());
+        sub->upper.assign(data_->upper.begin() + static_cast<std::ptrdiff_t>(d),
+                          data_->upper.end());
+        sub->log_size = log_count;
+        k::space_view& sv = sub->view;
+        sv = v;  // same tables; rows and parts shifted by d
+        sv.lo = v.lo + d;
+        sv.cap = v.cap + d;
+        sv.cap_suffix = v.cap_suffix + d;
+        sv.log_prefix = v.log_prefix + static_cast<std::int64_t>(d) * v.log_stride;
+        sv.log_suffix = v.log_suffix + static_cast<std::int64_t>(d) * v.log_stride;
+        sv.n = static_cast<std::int32_t>(n - d);
+        sv.total = left;
+        return space(std::move(sub));
+    }
+    // size = N[d][left] = P[d][left] - P[d][left - 1]
     const int w = v.row_limbs[row];
     const k::limb* hi = k::table_entry(v, row, left);
     natural size = natural::from_limbs(hi, static_cast<std::size_t>(w));
@@ -279,10 +388,12 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
     sv.size_limbs = static_cast<std::int32_t>(sub->size.limb_count());
     sv.n = static_cast<std::int32_t>(n - d);
     sv.total = left;
+    sub->log_size = log_of(sub->size);
     return space(std::move(sub));
 }
 
 void space::unrank(const natural& r, std::int32_t* out) const {
+    require_exact(*data_, "unrank");
     const k::status st = k::unrank(data_->view, r.limbs(), as_int(r.limb_count()), out);
     if (st != k::status::ok) {
         throw std::out_of_range("bounded_compositions::space::unrank: rank " + r.to_string() +
@@ -297,6 +408,7 @@ std::vector<std::int32_t> space::unrank(const natural& r) const {
 }
 
 natural space::rank(const std::int32_t* x) const {
+    require_exact(*data_, "rank");
     const k::space_view& v = data_->view;
     // An empty space has no table; the kernel rejects x before writing.
     const int width = v.size_limbs == 0 ? 1 : v.row_limbs[0];

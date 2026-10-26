@@ -18,6 +18,8 @@ that splits into regions that can be sampled independently.
   ([docs/kernel-rules.md](docs/kernel-rules.md)).
 - Thread-safe by construction: shared data is immutable, and point `i` of a
   sequence depends only on the space, the seed and `i`.
+- Exact multiprecision counting, or logarithmic counting for spaces too large
+  for exact tables.
 
 ## Build
 

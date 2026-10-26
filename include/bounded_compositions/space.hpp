@@ -16,6 +16,21 @@ namespace detail {
 struct space_data;
 }
 
+// How a space counts its compositions.
+enum class counting {
+    // Exact multiprecision counts: sizes, ranks, regions and every sequence.
+    exact,
+    // Natural logarithms of the counts in doubles, for spaces too large for
+    // exact tables. Supports log_size, contains/first/next, the unit-cube codec,
+    // coordinate sequences and i.i.d. sequences (the sequential conditional
+    // draw, uniform up to about 1e-12 relative error), but not size, ranks,
+    // regions or rank sequences, which throw std::logic_error. decode agrees
+    // with the exact decoder except for inputs within about 1e-12 of a cell
+    // boundary, which include the exactly dyadic points of unscrambled Sobol
+    // sequences; use scrambled coordinate sequences with logarithmic spaces.
+    logarithmic,
+};
+
 // All x in Z^n with x[0] + ... + x[n-1] = total and lower[i] <= x[i] <= upper[i],
 // ordered lexicographically (first part slowest).
 //
@@ -28,21 +43,26 @@ class space {
     // no composition give an empty space, not an error. Throws
     // std::length_error if the size needs more than kernel::max_limbs limbs.
     space(std::int32_t total, const std::vector<std::int32_t>& lower,
-          const std::vector<std::int32_t>& upper);
+          const std::vector<std::int32_t>& upper, counting mode = counting::exact);
     space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
-          std::size_t parts);
+          std::size_t parts, counting mode = counting::exact);
 
     std::size_t parts() const noexcept;
     std::int32_t total() const noexcept;
     const std::vector<std::int32_t>& lower() const noexcept;
     const std::vector<std::int32_t>& upper() const noexcept;
 
-    // Number of compositions.
-    const natural& size() const noexcept;
+    counting counting_mode() const noexcept;
+    // Number of compositions. Throws std::logic_error for a logarithmic space.
+    const natural& size() const;
+    // Natural logarithm of the number of compositions (minus infinity if
+    // there are none), in either counting mode.
+    double log_size() const noexcept;
     bool empty() const noexcept;
 
     // Writes the composition with rank r to out[0..parts()).
-    // Throws std::out_of_range if r >= size().
+    // Throws std::out_of_range if r >= size(). Ranks need exact counting:
+    // rank and unrank throw std::logic_error for a logarithmic space.
     void unrank(const natural& r, std::int32_t* out) const;
     std::vector<std::int32_t> unrank(const natural& r) const;
 
