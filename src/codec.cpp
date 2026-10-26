@@ -35,32 +35,41 @@ std::uint64_t to_fraction(double u, int i) {
 }
 
 // Log mode: centre of each part's cell as a double, from the same two-sided
-// window sums decode uses.
+// window sums decode uses: the segments wholly below the value, the part of
+// its own segment below it, and half its own completions.
 std::vector<double> encode_log(const space& s, const std::int32_t* x) {
     const k::space_view v = s.view();
     std::vector<double> u(static_cast<std::size_t>(dims_of(s)));
     std::int32_t left = v.total;
+    std::int32_t layer = v.layer_base;
     for (int i = 0; i < dims_of(s); ++i) {
         const int row = i + 1;
         const std::int32_t y = x[i] - v.lo[i];
-        const std::int32_t m = std::min(v.cap[i], left);
-        int side = 0;
-        const double whole = k::log_window(v, row, left - m, left, &side);
-        // Mass of the values below y: the window [left - y + 1, left] of the row.
+        double whole = k::log_zero;
         double before = k::log_zero;
-        if (y > 0) {
-            before = side == 0 ? k::log_sub(k::log_prefix_at(v, row, left),
-                                            k::log_prefix_at(v, row, left - y))
-                               : k::log_sub(k::log_suffix_at(v, row, left - y + 1),
-                                            k::log_suffix_at(v, row, left + 1));
+        std::int32_t next = layer;
+        for (int g = 0; g < v.segs[i]; ++g) {
+            const double mass = k::log_segment(v, i, g, left, layer);
+            whole = k::log_add(whole, mass);
+            const std::int32_t a = k::seg_first(v, i, g);
+            if (k::seg_last(v, i, g) < y) {
+                before = k::log_add(before, mass);
+            } else if (a <= y) {
+                next = layer + k::seg_step(v, i, g);
+                if (y > a) {
+                    before = k::log_add(
+                        before, k::log_window(v, row, next, left - y + 1, left - a, nullptr));
+                }
+            }
         }
-        const double width = k::log_window(v, row, left - y, left - y, nullptr);
+        const double width = k::log_window(v, row, next, left - y, left - y, nullptr);
         const double centre = k::log_add(before, width - std::log(2.0));
         double f = std::exp(centre - whole);
         if (!(f >= 0.0)) f = 0.0;
         if (f >= 1.0) f = std::nextafter(1.0, 0.0);
         u[static_cast<std::size_t>(i)] = f;
         left -= y;
+        layer = next;
     }
     return u;
 }

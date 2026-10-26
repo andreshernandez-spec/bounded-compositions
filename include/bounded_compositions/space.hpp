@@ -50,8 +50,8 @@ struct support_limits {
 
 // All x in Z^n with x[0] + ... + x[n-1] = total and lower[i] <= x[i] <= upper[i],
 // within the support limits, ordered lexicographically (first part slowest).
-// The limits keep counting exact: they add a dimension for the number of
-// nonzero parts so far (one layer per allowed count) and split each part's
+// The limits work in both counting modes: they add a dimension for the number
+// of nonzero parts so far (one layer per allowed count) and split each part's
 // values into the ones below zero, zero, and the ones above.
 //
 // A space is immutable. Copies share the same table, and every member
@@ -68,8 +68,7 @@ class space {
           std::size_t parts, counting mode = counting::exact);
     // With support limits. Also throws std::invalid_argument if a count is
     // negative, min_count > max_count, or min_size is neither empty nor one
-    // value of at least 1 per part, and std::logic_error for logarithmic
-    // counting with limits that change the space, which it does not support.
+    // value of at least 1 per part.
     space(std::int32_t total, const std::vector<std::int32_t>& lower,
           const std::vector<std::int32_t>& upper, const support_limits& support,
           counting mode = counting::exact);

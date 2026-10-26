@@ -31,6 +31,7 @@ struct space_data {
     natural size;
     counting mode = counting::exact;
     std::vector<double> log_prefix, log_suffix;  // logarithmic mode only
+    std::vector<std::uint8_t> positive;          // logarithmic mode only
     double log_size = -std::numeric_limits<double>::infinity();
     k::space_view view{};
     // A subspace points into its parent's arrays and keeps the parent alive.
@@ -177,45 +178,85 @@ void build_table(detail::space_data& d, std::int32_t shifted_total, std::int32_t
     }
 }
 
-// Logarithmic table: for each row, log P and log S over k = 0..total + 1.
-// N[i][k] is the window [k - min(cap, k), k] of row i + 1, summed from the side
-// with less mass outside the window (see log_window in walk.hpp).
-void build_log_table(detail::space_data& d, std::int32_t shifted_total) {
+// Logarithmic table: for each row and layer, log P and log S over
+// k = 0..total + 1. N[i][k][c] sums, over part i's segments [a, b], the window
+// [k - min(b, k), k - a] of row i + 1 in the segment's layer, each summed from
+// the side with less mass outside it (see log_window in walk.hpp).
+void build_log_table(detail::space_data& d, std::int32_t shifted_total, std::int32_t layers) {
     const std::size_t n = d.cap.size();
     const std::size_t stride = static_cast<std::size_t>(shifted_total) + 2;
-    d.log_prefix.assign((n + 1) * stride, k::log_zero);
-    d.log_suffix.assign((n + 1) * stride, k::log_zero);
+    const std::size_t L = static_cast<std::size_t>(layers);
+    d.log_prefix.assign((n + 1) * L * stride, k::log_zero);
+    d.log_suffix.assign((n + 1) * L * stride, k::log_zero);
     double* P = d.log_prefix.data();
     double* S = d.log_suffix.data();
-    // Row n: N[n][0] = 1, N[n][k > 0] = 0.
-    for (std::size_t kk = 0; kk <= static_cast<std::size_t>(shifted_total); ++kk)
-        P[n * stride + kk] = 0.0;
-    S[n * stride] = 0.0;
+    const k::space_view& v = d.view;  // segments and count limits are set
+    auto at = [&](std::size_t row, std::int32_t c) {
+        return (row * L + static_cast<std::size_t>(c)) * stride;
+    };
+    // positive: N > 0, exactly, with prefix counts of row i + 1 for windows.
+    const std::size_t width_k = static_cast<std::size_t>(shifted_total) + 1;
+    d.positive.assign((n + 1) * L * width_k, std::uint8_t{0});
+    auto pos_at = [&](std::size_t row, std::int32_t c) {
+        return (row * L + static_cast<std::size_t>(c)) * width_k;
+    };
+    std::vector<std::int32_t> ones(L * (width_k + 1));
+    // Row n: N[n][0][c] = 1 for an allowed count c, every other entry 0.
+    for (std::int32_t c = 0; c < layers; ++c) {
+        if (c < v.count_min || c > v.count_max) continue;
+        for (std::size_t kk = 0; kk <= static_cast<std::size_t>(shifted_total); ++kk) {
+            P[at(n, c) + kk] = 0.0;
+        }
+        S[at(n, c)] = 0.0;
+        d.positive[pos_at(n, c)] = 1;
+    }
     std::vector<double> count(stride);
     for (std::size_t i = n; i-- > 0;) {
-        const double* Pn = P + (i + 1) * stride;
-        const double* Sn = S + (i + 1) * stride;
-        const std::int32_t cap = d.cap[i];
-        for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
-            const std::int32_t lo = kk - std::min(cap, kk);
-            const double below = lo > 0 ? Pn[lo - 1] : k::log_zero;
-            const double above = Sn[kk + 1];
-            count[static_cast<std::size_t>(kk)] =
-                below <= above ? k::log_sub(Pn[kk], below) : k::log_sub(Sn[lo], above);
+        const int part = static_cast<int>(i);
+        for (std::int32_t c = 0; c < layers; ++c) {
+            std::int32_t* o = &ones[static_cast<std::size_t>(c) * (width_k + 1)];
+            o[0] = 0;
+            for (std::size_t kk = 0; kk < width_k; ++kk) {
+                o[kk + 1] = o[kk] + d.positive[pos_at(i + 1, c) + kk];
+            }
         }
-        double run = k::log_zero;
-        for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
-            run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
-            P[i * stride + static_cast<std::size_t>(kk)] = run;
-        }
-        run = k::log_zero;
-        for (std::int32_t kk = shifted_total; kk >= 0; --kk) {
-            run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
-            S[i * stride + static_cast<std::size_t>(kk)] = run;
+        for (std::int32_t c = 0; c < layers; ++c) {
+            for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
+                double sum = k::log_zero;
+                bool any = false;
+                for (int g = 0; g < v.segs[part]; ++g) {
+                    const std::int32_t a = k::seg_first(v, part, g);
+                    const std::int32_t b = std::min(k::seg_last(v, part, g), kk);
+                    const std::int32_t cn = c + k::seg_step(v, part, g);
+                    if (a > b || cn >= layers) continue;
+                    const double* Pn = P + at(i + 1, cn);
+                    const double* Sn = S + at(i + 1, cn);
+                    const std::int32_t lo = kk - b, hi = kk - a;
+                    const double below = lo > 0 ? Pn[lo - 1] : k::log_zero;
+                    const double above = Sn[hi + 1];
+                    sum = k::log_add(sum, below <= above ? k::log_sub(Pn[hi], below)
+                                                         : k::log_sub(Sn[lo], above));
+                    const std::int32_t* o = &ones[static_cast<std::size_t>(cn) * (width_k + 1)];
+                    any = any || o[hi + 1] > o[lo];
+                }
+                count[static_cast<std::size_t>(kk)] = sum;
+                d.positive[pos_at(i, c) + static_cast<std::size_t>(kk)] =
+                    any ? std::uint8_t{1} : std::uint8_t{0};
+            }
+            double run = k::log_zero;
+            for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
+                run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
+                P[at(i, c) + static_cast<std::size_t>(kk)] = run;
+            }
+            run = k::log_zero;
+            for (std::int32_t kk = shifted_total; kk >= 0; --kk) {
+                run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
+                S[at(i, c) + static_cast<std::size_t>(kk)] = run;
+            }
         }
     }
-    // log N[0][total] = log S[0][total], since nothing lies above the total.
-    d.log_size = S[static_cast<std::size_t>(shifted_total)];
+    // log N[0][total][0] = log S[0][0][total], since nothing lies above the total.
+    d.log_size = S[at(0, 0) + static_cast<std::size_t>(shifted_total)];
 }
 
 // Splits each part's values into segments (kernel::space_view): below zero,
@@ -316,11 +357,6 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
     for (std::size_t i = 0; i < parts && plain; ++i) {
         plain = d->segs[i] == 1 && d->seg[9 * i] == 0 && d->seg[9 * i + 1] == d->cap[i];
     }
-    if (!plain && mode == counting::logarithmic) {
-        throw std::logic_error(
-            "bounded_compositions::space: support limits need exact counting; the logarithmic "
-            "mode does not support them");
-    }
     const std::int32_t layers = count_limited ? std::min(support.max_count, n32) + 1 : 1;
 
     // cap_suffix[i] = min(shifted_total, cap[i] + ... + cap[n-1]).
@@ -343,7 +379,16 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
     v.plain = plain ? 1 : 0;
 
     const bool logarithmic = mode == counting::logarithmic;
-    if (feasible && logarithmic) build_log_table(*d, shifted_total);
+    if (feasible && logarithmic) {
+        build_log_table(*d, shifted_total, layers);
+        if (k::log_is_zero(d->log_size)) {  // the limits leave nothing
+            feasible = false;
+            d->log_size = -std::numeric_limits<double>::infinity();
+            std::vector<double>().swap(d->log_prefix);
+            std::vector<double>().swap(d->log_suffix);
+            std::vector<std::uint8_t>().swap(d->positive);
+        }
+    }
     if (feasible && !logarithmic) {
         build_table(*d, shifted_total, layers);
         if (d->size.is_zero()) {  // the limits leave nothing
@@ -356,6 +401,7 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
     v.log_mode = logarithmic ? 1 : 0;
     v.log_prefix = logarithmic && feasible ? d->log_prefix.data() : nullptr;
     v.log_suffix = logarithmic && feasible ? d->log_suffix.data() : nullptr;
+    v.positive = logarithmic && feasible ? d->positive.data() : nullptr;
     v.log_stride = static_cast<std::int64_t>(shifted_total) + 2;
     v.n = static_cast<std::int32_t>(parts);
     v.total = shifted_total;
@@ -434,7 +480,7 @@ std::size_t space::table_bytes() const noexcept {
     const detail::space_data* d = data_.get();
     while (d->parent) d = d->parent.get();
     return d->table.size() * sizeof(k::limb) +
-           (d->log_prefix.size() + d->log_suffix.size()) * sizeof(double);
+           (d->log_prefix.size() + d->log_suffix.size()) * sizeof(double) + d->positive.size();
 }
 
 space::space(std::shared_ptr<const detail::space_data> data) : data_(std::move(data)) {}
@@ -477,7 +523,7 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
                             rest.min_size.begin() + static_cast<std::ptrdiff_t>(d));
     }
     if (data_->mode == counting::logarithmic) {
-        const double log_count = k::log_window(v, row, left, left, nullptr);
+        const double log_count = k::log_window(v, row, layer, left, left, nullptr);
         if (k::log_is_zero(log_count)) {
             throw std::invalid_argument(
                 "bounded_compositions::space::subspace: prefix has no completion");
@@ -499,8 +545,11 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
         sv.lo = v.lo + d;
         sv.cap = v.cap + d;
         sv.cap_suffix = v.cap_suffix + d;
-        sv.log_prefix = v.log_prefix + static_cast<std::int64_t>(d) * v.log_stride;
-        sv.log_suffix = v.log_suffix + static_cast<std::int64_t>(d) * v.log_stride;
+        const std::int64_t skip = static_cast<std::int64_t>(d) * v.layers * v.log_stride;
+        sv.log_prefix = v.log_prefix + skip;
+        sv.log_suffix = v.log_suffix + skip;
+        sv.positive = v.positive + static_cast<std::int64_t>(d) * v.layers * v.table_k;
+        sv.layer_base = layer;
         sv.n = static_cast<std::int32_t>(n - d);
         sv.total = left;
         return space(std::move(sub));

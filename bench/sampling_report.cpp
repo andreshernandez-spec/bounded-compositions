@@ -68,7 +68,7 @@ std::vector<std::vector<double>> exact_marginals(const space_spec& p) {
     const k::space_view v = logs.view();
     const std::size_t n = p.lo.size();
     auto log_count = [&](int row, std::int32_t kk) {
-        return k::log_window(v, row, kk, kk, nullptr);
+        return k::log_window(v, row, 0, kk, kk, nullptr);  // no support limits: layer 0
     };
     std::vector<double> dist(static_cast<std::size_t>(v.total) + 1, 0.0);
     dist[static_cast<std::size_t>(v.total)] = 1.0;
