@@ -18,6 +18,8 @@ results are deterministic.
   its **compositions**.
 - The **rank** of a composition is its position in lexicographic order, first
   part slowest, counting from 0.
+- A **region** is an interval of ranks. A **subtree** is the region of the
+  compositions that share their first parts; it is contiguous in rank order.
 - A **sequence** produces compositions one index at a time. Point `i` depends
   only on the space, the sequence kind, a seed and `i`, so drawing 1000 points
   and then 100 more gives exactly the first 1100.
@@ -62,9 +64,10 @@ This is the one-dimensional Halton (van der Corput) order applied to ranks:
 the method the earlier implementation called Halton.
 
 Let `m = max(1, bitlen(size - 1))`, so `2^(m-1) < size <= 2^m`. Raw index `t`
-gives the m-bit value `X(t) = reverse_m(t)`, optionally XORed with a mask for
-scrambled replicates. Values `X(t) >= size` are skipped, and point `i` is the
-rank of the `i`-th raw index that is kept.
+gives the m-bit value `X(t) = reverse_m(t)`, optionally XORed with a mask `M`
+for scrambled replicates. Values `X(t) >= size` are skipped, and point `i` is
+the rank of the `i`-th raw index that is kept. Put the other way round, the
+sequence sorts the ranks `x` by their key `reverse_m(x ^ M)`.
 
 **No repeats.** Bit reversal (and XOR with a fixed mask) is a bijection of the
 m-bit values, so each rank appears for exactly one raw index. After `size`
@@ -103,19 +106,37 @@ by one, so the two gap ratios are not equal by construction; in these
 measurements they were equal at 64 of the 64
 sample sizes.
 
-**Random access.** Point `i` is found directly: the kept raw indices below
-`t` are counted by splitting `[0, t)` into aligned blocks, each an arithmetic
-progression, in O(64) steps, and a binary search finds the `i`-th. So `seek`,
-`points(begin, count)` and threads need no shared state.
+**Random access.** Point `i` is found directly. The bits of its rank are fixed
+from the lowest up, which are the key's most significant: at each bit, the
+ranks on the side with key bit 0 form an arithmetic progression, so one
+division counts them, and the search moves to the side that holds the `i`-th.
+It stops when one rank is left, after at most 64 steps of 64-bit arithmetic.
+So `seek`, `points(begin, count)` and threads need no shared state.
 
-**Regions.** Split the ranks into the `2^j` aligned blocks of the order
-(`dyadic_split`). A raw index lands in block `b` exactly when its low `j` bits
-are `reverse_j(b)`, and within the block its offset is the radical inverse of
-the remaining bits. So a block's own `rank_sequence` produces exactly the
-points the global sequence puts in that block, in the same order: equal
-budgets per block reproduce the global sequence. For spaces wider than 64
-bits the index covers the top 64 bits of the rank, so this holds for each
-block's first `2^(64 - j)` points.
+**Regions.** A region lists its ranks in the space's order: point `i` of a
+region is its rank with the `i`-th smallest key, found by the same count
+restricted to the interval. Three properties follow.
+
+- *The gap bound holds inside every region.* Level `j`'s ranks in a region
+  `[b, e)` are evenly spaced with step `2^(m-j)`, the first within one step of
+  `b` and the last within one step of `e`, so the proof above applies to the
+  region's level counts with `e - b` in place of `size`.
+- *Any split of a region reproduces it.* A piece's sequence gives exactly the
+  region's points in that piece, in the same order. `dyadic_split` cuts along
+  the order's grid, the aligned blocks of `2^w` ranks, which the order visits
+  in turn: blocks wholly inside the region hold equal shares, within one
+  point, of every prefix of the region's sequence.
+- *A region resumes where an outer sequence stopped.* The outer sequence's
+  first N points that fall in the region are the region's first points.
+  `overlap` counts them with a binary search on keys, and `resume_after` skips
+  them, so the region continues without repeats and its new points fill the
+  gaps between the old ones.
+
+For regions wider than 64 bits a sequence holds fewer than `2^64` points:
+with `f = bitlen(size - 1) - 64`, it lists the region's ranks congruent to `M`
+modulo `2^f`, which have the smallest keys, and the same 64-bit search runs on
+`x >> f`. A smaller region inside it starts with those points and continues
+with the ranks between them.
 
 ### 3.2 `scaled_rank_sequence`: the earlier mapping
 
@@ -168,6 +189,26 @@ unranked. Every composition has probability exactly `1 / size`. In the
 logarithmic counting mode, where there are no ranks, it is the sequential
 conditional draw through the decoder, uniform up to about `1e-12` relative
 error.
+
+### 3.5 Not repeating evaluated points
+
+Repeats have three sources: a region sampled again from its start, a
+different order (another seed, or a space with its parts reordered), and
+sequences that repeat by design (coordinate, iid).
+
+- *Same space and seed:* `resume_after` (section 3.1), with no stored state.
+- *Anything else:* a `visited_set` holds the evaluated ranks exactly, one rank
+  per entry, in hash tables split into shards with their own locks so that
+  threads can share it. A `fresh_sampler` draws from a sequence, skips the
+  visited points and marks the ones it hands out. A rank sequence covers its
+  region, so the sampler ends exactly when every point of the region is
+  visited, having passed each visited point once.
+- *Small regions with coordinate or iid sequences:* those repeat and can miss
+  points, so after `patience` visited points in a row (1024 by default) the
+  sampler moves to the region's rank sequence, which lists what is left.
+
+Threads can share one sampler: each takes its points with one atomic step on
+the sequence's position, and the set decides which thread keeps a point.
 
 ## 4. Measured spread
 
@@ -371,6 +412,32 @@ Wide space (195-bit size):
 | iid | 100 | 1 024 | 1 100 | 16 384 |
 | scaled_rank | 100 | 1 024 | 1 100 | 16 384 |
 
+### 4.5 Regions after the whole space
+
+Each space's first 4096 rank-sequence points, then every subtree
+one level down resumed for up to 256 more points:
+
+| space | subtrees | points added | repeats | worst gap ratio inside a subtree |
+|---|---:|---:|---:|---:|
+| 6 parts | 13 | 3328 | 0 | 1.82 |
+| 8 parts | 21 | 5376 | 0 | 1.94 |
+| 30 parts, total near the cap sum | 11 | 2333 | 0 | 1.96 |
+| 100 parts (195-bit size) | 101 | 25444 | 0 | 1.99 |
+
+The gap ratio is taken inside each subtree over all its points, old and new,
+for the subtrees holding at least two. It stays below 2, as section 3.1
+proves for any prefix of a region's sequence.
+
+A `fresh_sampler` on the subtree with prefix (5, 5, 5) of the small space
+(118 compositions), after the space's first 16384 points
+were marked visited, 11 of them inside the subtree:
+
+| source | points handed out | visited points passed over | moved to rank order |
+|---|---:|---:|---|
+| rank | 107 | 11 | no |
+| coordinate_scrambled | 107 | 1477 | yes |
+| iid | 107 | 1509 | yes |
+
 ## 5. Performance
 
 ### 5.1 Threads
@@ -380,31 +447,31 @@ per call, median of 3 runs:
 
 | sequence | 1 thread | 2 threads | 4 threads | 8 threads | 16 threads |
 |---|---:|---:|---:|---:|---:|
-| rank | 0.332 | 0.631 | 1.09 | 1.68 | 2.28 |
-| coordinate_scrambled | 0.243 | 0.491 | 0.852 | 1.31 | 1.58 |
-| iid | 0.333 | 0.678 | 1.18 | 1.83 | 2.14 |
+| rank | 0.345 | 0.581 | 1.13 | 1.82 | 2.19 |
+| coordinate_scrambled | 0.270 | 0.488 | 0.874 | 1.44 | 1.68 |
+| iid | 0.326 | 0.675 | 1.16 | 1.87 | 2.37 |
 
 ![Points per second against threads](sampling/threads.png)
 
-One thread produces 0.332 million rank-sequence points per second; 8 threads
-give 5.1 times that and 16 hardware threads
-6.9 times. Every point is independent, so threads share
+One thread produces 0.345 million rank-sequence points per second; 8 threads
+give 5.3 times that and 16 hardware threads
+6.3 times. Every point is independent, so threads share
 nothing but the read-only table and an atomic block counter.
 
 ### 5.2 Tables and memory
 
 | counting | parts | total | upper bound | build ms | table MiB | log size |
 |---|---:|---:|---:|---:|---:|---:|
-| exact | 10 | 100 | 100 | 0.0363 | 0.00848 | 29.1 |
-| exact | 100 | 100 | 100 | 0.264 | 0.187 | 135 |
-| exact | 100 | 1000 | 1000 | 2.82 | 3.68 | 330 |
-| exact | 1000 | 1000 | 1000 | 153 | 156 | 1382 |
-| logarithmic | 10 | 100 | 100 | 0.0633 | 0.0171 | 29.1 |
-| logarithmic | 100 | 100 | 100 | 0.491 | 0.157 | 135 |
-| logarithmic | 100 | 1000 | 1000 | 4.42 | 1.54 | 330 |
-| logarithmic | 1000 | 1000 | 1000 | 48.4 | 15.3 | 1382 |
-| logarithmic | 2000 | 2200 | 2200 | 222 | 67.2 | 2901 |
-| logarithmic | 3000 | 3000 | 3000 | 413 | 137 | 4154 |
+| exact | 10 | 100 | 100 | 0.0367 | 0.00848 | 29.1 |
+| exact | 100 | 100 | 100 | 0.266 | 0.187 | 135 |
+| exact | 100 | 1000 | 1000 | 2.76 | 3.68 | 330 |
+| exact | 1000 | 1000 | 1000 | 154 | 156 | 1382 |
+| logarithmic | 10 | 100 | 100 | 0.0767 | 0.0171 | 29.1 |
+| logarithmic | 100 | 100 | 100 | 0.612 | 0.157 | 135 |
+| logarithmic | 100 | 1000 | 1000 | 5.51 | 1.54 | 330 |
+| logarithmic | 1000 | 1000 | 1000 | 56.7 | 15.3 | 1382 |
+| logarithmic | 2000 | 2200 | 2200 | 209 | 67.2 | 2901 |
+| logarithmic | 3000 | 3000 | 3000 | 407 | 137 | 4154 |
 
 The exact table grows as `n K` entries times the limb width of the counts. At
 1000 parts with total 1000 it takes 156 MiB, against
@@ -415,15 +482,15 @@ entry.
 
 | operation | microseconds per call |
 |---|---:|
-| unrank | 2.91 |
-| rank | 3.79 |
-| decode_exact | 3.46 |
-| decode_log | 3.40 |
-| encode_exact | 245 |
-| encode_log | 11.0 |
+| unrank | 2.80 |
+| rank | 3.92 |
+| decode_exact | 3.32 |
+| decode_log | 2.93 |
+| encode_exact | 271 |
+| encode_log | 10.9 |
 
-Unranking takes 2.91 microseconds. `encode` is far slower,
-245 microseconds exactly and 11.0 in logarithms,
+Unranking takes 2.80 microseconds. `encode` is far slower,
+271 microseconds exactly and 10.9 in logarithms,
 because it binary-searches each coordinate with a heap allocation per step.
 It is called once per point handed back from an optimiser; an allocation-free
 version is possible if it becomes a bottleneck.
@@ -440,18 +507,16 @@ version is possible if it becomes a bottleneck.
 - **Coordinate sequences:** they need `n - 1 <= 21201` dimensions. They can
   repeat points, and a value whose conditional share is below `2^-64` cannot be
   reached.
-- **Rank sequences on spaces wider than 64 bits:** they index the top 64 bits of
-  the rank, so they hold just under `2^64` points, and dyadic blocks reproduce
-  the global order for their first `2^(64 - j)` points.
+- **Rank sequences on regions wider than 64 bits:** a sequence holds between
+  `2^63` and `2^64 - 1` points (section 3.1). `fresh_sampler` reports such a
+  region exhausted when its sequence is, not when the region is.
 - **Later parts:** rank order spreads the leading parts finely and the trailing
   parts no better than independent draws; the coordinate sequence's advantage
   also shrinks along the part order. The part order given to the space matters.
-- **Region sequences after the whole space:** a region's rank sequence is the
-  radical-inverse order of the region itself, which equals the whole space's
-  order restricted to the region only for dyadic blocks. A region sampled from
-  its first point after the whole space has been sampled gives the earlier
-  points in it again: a dyadic block from its first point, any other region at
-  the latest when it has covered the region.
+- **Repeats across orders:** only rank sequences of the same space and seed
+  resume without stored state. Anything else needs a `visited_set`, which
+  keeps every evaluated rank: 8 bytes per 64 bits of rank, in tables kept at
+  most half full.
 
 ## 7. Decisions
 

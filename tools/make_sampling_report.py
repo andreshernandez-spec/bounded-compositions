@@ -280,6 +280,33 @@ def main():
     values["small_distinct_iid"] = f"{dup['iid']:.1%}"
     values["small_size_fraction"] = f"{top_n / int(spaces['small']['size']):.0%}"
 
+    res = data["resume"]
+    if any(r["first"] != res[0]["first"] or r["per_region"] != res[0]["per_region"] for r in res):
+        raise SystemExit("resume records use different settings")
+    values["resume_first"] = str(res[0]["first"])
+    values["resume_per_region"] = str(res[0]["per_region"])
+    lines = ["| space | subtrees | points added | repeats | worst gap ratio inside a subtree |",
+             "|---|---:|---:|---:|---:|"]
+    for sp in SPACE_TITLES:
+        r = next(x for x in res if x["space"] == sp)
+        lines.append(f"| {SPACE_TITLES[sp]} | {r['regions']} | {r['added']} | {r['repeats']} | "
+                     f"{fmt(r['worst_gap_ratio'])} |")
+    values["table_resume"] = "\n".join(lines)
+    fr = data["fresh"]
+    keys = ("prefix", "region_size", "first", "visited_inside")
+    if any(r[k] != fr[0][k] for r in fr for k in keys):
+        raise SystemExit("fresh records use different settings")
+    values["fresh_prefix"] = "(" + ", ".join(str(v) for v in fr[0]["prefix"]) + ")"
+    values["fresh_size"] = str(fr[0]["region_size"])
+    values["fresh_first"] = str(fr[0]["first"])
+    values["fresh_inside"] = str(fr[0]["visited_inside"])
+    lines = ["| source | points handed out | visited points passed over | moved to rank order |",
+             "|---|---:|---:|---|"]
+    for r in fr:
+        lines.append(f"| {r['source']} | {r['handed_out']} | {r['skipped']} | "
+                     f"{'yes' if r['switched'] else 'no'} |")
+    values["table_fresh"] = "\n".join(lines)
+
     ns = sorted({r["n"] for r in spread})
     values["n_checkpoints"] = str(len(ns))
     values["max_n"] = str(ns[-1])

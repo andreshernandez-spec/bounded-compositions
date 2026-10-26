@@ -335,6 +335,122 @@ std::string latency_records() {
     return list<std::string>(rows, [](const std::string& r) { return r; });
 }
 
+// Largest gap between the sorted ranks inside r, counting the ends
+// begin - 1 and end, times count / size.
+double region_gap_ratio(std::vector<bc::natural> ranks, const bc::region& r) {
+    std::sort(ranks.begin(), ranks.end());
+    double widest = (ranks.front() - r.begin()).to_double() + 1.0;
+    for (std::size_t i = 1; i < ranks.size(); ++i) {
+        widest = std::max(widest, (ranks[i] - ranks[i - 1]).to_double());
+    }
+    widest = std::max(widest, (r.end() - ranks.back()).to_double());
+    return widest * static_cast<double>(ranks.size()) / r.size().to_double();
+}
+
+// Every first-level subtree resumed after the whole space's first points:
+// repeats, and the spread of each subtree's points afterwards.
+std::string resume_records() {
+    std::vector<std::string> rows;
+    const std::uint64_t first = 4096, more = 256;
+    for (const space_spec& p : spaces()) {
+        const bc::space s(p.total, p.lo, p.hi);
+        const std::size_t n = s.parts();
+        bc::sequence global = bc::rank_sequence(s);
+        std::vector<std::int32_t> pts(first * n);
+        global.take(first, pts.data());
+        std::set<bc::natural> seen;
+        std::vector<bc::natural> before;
+        for (std::uint64_t i = 0; i < first; ++i) {
+            before.push_back(s.rank(pts.data() + i * n));
+            seen.insert(before.back());
+        }
+        require(seen.size() == first, "the whole space's points are distinct");
+        std::uint64_t repeats = 0, added = 0, measured = 0;
+        double worst = 0.0;
+        const std::vector<bc::region> kids = bc::children(s, bc::whole(s));
+        for (const bc::region& kid : kids) {
+            bc::sequence local = bc::rank_sequence(s, kid);
+            local.resume_after(global);
+            std::vector<bc::natural> inside;
+            for (const bc::natural& r : before) {
+                if (kid.contains(r)) inside.push_back(r);
+            }
+            require(local.position() == inside.size(), "resume skips the points already taken");
+            const std::uint64_t k = std::min(more, local.capacity() - local.position());
+            std::vector<std::int32_t> extra(k * n);
+            local.take(k, extra.data());
+            for (std::uint64_t i = 0; i < k; ++i) {
+                const bc::natural r = s.rank(extra.data() + i * n);
+                require(kid.contains(r), "resumed points stay in the subtree");
+                if (!seen.insert(r).second) ++repeats;
+                inside.push_back(r);
+            }
+            added += k;
+            if (inside.size() >= 2) {
+                worst = std::max(worst, region_gap_ratio(inside, kid));
+                ++measured;
+            }
+        }
+        std::ostringstream row;
+        row << "{\"space\": " << quote(p.name) << ", \"first\": " << first
+            << ", \"per_region\": " << more << ", \"regions\": " << kids.size()
+            << ", \"measured\": " << measured << ", \"added\": " << added
+            << ", \"repeats\": " << repeats << ", \"worst_gap_ratio\": " << num(worst) << "}";
+        rows.push_back(row.str());
+    }
+    return list<std::string>(rows, [](const std::string& r) { return r; });
+}
+
+// fresh_sampler on a small subtree after the whole space's first points were
+// evaluated: what each source hands out before the subtree runs dry.
+std::string fresh_records() {
+    std::vector<std::string> rows;
+    const space_spec p = spaces()[0];  // small
+    const bc::space s(p.total, p.lo, p.hi);
+    const std::size_t n = s.parts();
+    const std::uint64_t first = 16384;
+    const composition prefix{5, 5, 5};
+    const bc::region t = bc::subtree(s, prefix);
+    const std::uint64_t size = t.size().to_u64();
+    const bc::sequence global = bc::rank_sequence(s);
+    std::uint64_t inside = 0;
+    for (std::uint64_t i = 0; i < first; ++i) {
+        if (t.contains(global.rank_at(i))) ++inside;
+    }
+    const std::vector<named_sequence> sources = {
+        {"rank", [&](const bc::space&) { return bc::rank_sequence(s, t); }},
+        {"coordinate_scrambled",
+         [&](const bc::space&) { return bc::coordinate_sequence(s, t, 1); }},
+        {"iid", [&](const bc::space&) { return bc::iid_sequence(s, t, 1); }},
+    };
+    for (const named_sequence& q : sources) {
+        bc::visited_set visited(s);
+        for (std::uint64_t i = 0; i < first; ++i) visited.insert(global.rank_at(i));
+        bc::fresh_sampler fresh(q.make(s), visited);
+        std::vector<std::int32_t> out(size * n);
+        const std::uint64_t got = fresh.take(size, out.data());
+        std::set<bc::natural> distinct;
+        for (std::uint64_t i = 0; i < got; ++i) {
+            const bc::natural r = s.rank(out.data() + i * n);
+            require(t.contains(r), "fresh points stay in the subtree");
+            distinct.insert(r);
+        }
+        require(distinct.size() == got, "fresh points are distinct");
+        require(visited.size() == first + got, "every fresh point was unvisited");
+        std::ostringstream row;
+        row << "{\"space\": " << quote(p.name) << ", \"source\": " << quote(q.name)
+            << ", \"prefix\": "
+            << list<std::int32_t>(prefix, [](const std::int32_t& v) { return std::to_string(v); })
+            << ", \"region_size\": " << size << ", \"first\": " << first
+            << ", \"visited_inside\": " << inside << ", \"handed_out\": " << got
+            << ", \"skipped\": " << fresh.skipped()
+            << ", \"switched\": " << (fresh.switched() ? "true" : "false")
+            << ", \"exhausted\": " << (fresh.exhausted() ? "true" : "false") << "}";
+        rows.push_back(row.str());
+    }
+    return list<std::string>(rows, [](const std::string& r) { return r; });
+}
+
 std::string machine_record() {
     std::string model = "unknown";
     std::ifstream cpu("/proc/cpuinfo");
@@ -373,6 +489,9 @@ int main(int argc, char** argv) {
     std::vector<std::string> space_info;
     std::fprintf(stderr, "spread...\n");
     const std::string spread = spread_records(space_info);
+    std::fprintf(stderr, "regions...\n");
+    const std::string resume = resume_records();
+    const std::string fresh = fresh_records();
     std::fprintf(stderr, "throughput...\n");
     const std::string throughput = throughput_records();
     std::fprintf(stderr, "build cost...\n");
@@ -382,8 +501,9 @@ int main(int argc, char** argv) {
     std::ofstream out(argv[1]);
     out << "{\n\"machine\": " << machine_record() << ",\n\"spaces\": "
         << list<std::string>(space_info, [](const std::string& r) { return r; })
-        << ",\n\"spread\": " << spread << ",\n\"throughput\": " << throughput
-        << ",\n\"build\": " << build << ",\n\"latency\": " << latency << "\n}\n";
+        << ",\n\"spread\": " << spread << ",\n\"resume\": " << resume << ",\n\"fresh\": " << fresh
+        << ",\n\"throughput\": " << throughput << ",\n\"build\": " << build
+        << ",\n\"latency\": " << latency << "\n}\n";
     require(static_cast<bool>(out), "records written");
     std::fprintf(stderr, "wrote %s\n", argv[1]);
     return 0;
