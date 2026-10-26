@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "bounded_compositions/kernel/walk.hpp"
+#include "counts.hpp"
 
 namespace bounded_compositions {
 
@@ -16,13 +17,6 @@ namespace k = kernel;
 namespace {
 
 int dims_of(const space& s) { return static_cast<int>(s.parts()) - 1; }
-
-// P[row][kk] as a natural, zero for kk < 0.
-natural prefix_sum(const k::space_view& v, int row, std::int32_t kk) {
-    if (kk < 0) return natural();
-    return natural::from_limbs(k::table_entry(v, row, kk),
-                               static_cast<std::size_t>(v.row_limbs[row]));
-}
 
 // floor(n * u / 2^64).
 natural scaled(const natural& n, std::uint64_t u) {
@@ -115,11 +109,13 @@ void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {
     }
     const k::space_view v = s.view();
     std::int32_t left = v.total;
+    std::int32_t layer = v.layer_base;
     for (int i = 0; i < dims_of(s); ++i) {
         const std::int32_t y = x[i] - v.lo[i];
-        const natural count = prefix_sum(v, i, left) - prefix_sum(v, i, left - 1);  // N[i][left]
-        const natural below = prefix_sum(v, i + 1, left) - prefix_sum(v, i + 1, left - y);
-        const natural width = prefix_sum(v, i + 1, left - y) - prefix_sum(v, i + 1, left - y - 1);
+        const std::int32_t next = layer + k::step_of(v, i, y);
+        const natural count = detail::completions_of(v, i, layer, left);
+        const natural below = detail::below_of(v, i, left, layer, y);
+        const natural width = detail::completions_of(v, i + 1, next, left - y);
         // Centre of the cell [below, below + width), in half units so that a
         // one-wide cell is not encoded at its edge: the smallest fraction u
         // with u * count >= below + width / 2.
@@ -144,6 +140,7 @@ void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {
         }
         u[i] = lo;
         left -= y;
+        layer = next;
     }
 }
 

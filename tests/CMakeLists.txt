@@ -24,7 +24,8 @@ add_executable(bounded_compositions_tests
   test_region.cpp
   test_sequence.cpp
   test_smoke.cpp
-  test_space.cpp)
+  test_space.cpp
+  test_support.cpp)
 target_link_libraries(bounded_compositions_tests
   PRIVATE bounded_compositions::bounded_compositions Catch2::Catch2WithMain bounded_compositions_warnings)
 # Tests of private pieces (Sobol tables) include headers from src/.

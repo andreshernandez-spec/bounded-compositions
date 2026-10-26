@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -31,8 +32,27 @@ enum class counting {
     logarithmic,
 };
 
+// Limits on the parts that are nonzero (the support). The defaults allow
+// every composition the bounds allow.
+struct support_limits {
+    // Number of parts with x[i] != 0.
+    std::int32_t min_count = 0;
+    std::int32_t max_count = std::numeric_limits<std::int32_t>::max();
+    // Semicontinuous parts: x[i] == 0 or |x[i]| >= min_size[i]. Empty means 1
+    // for every part, which allows every value.
+    std::vector<std::int32_t> min_size;
+
+    friend bool operator==(const support_limits& a, const support_limits& b) {
+        return a.min_count == b.min_count && a.max_count == b.max_count && a.min_size == b.min_size;
+    }
+    friend bool operator!=(const support_limits& a, const support_limits& b) { return !(a == b); }
+};
+
 // All x in Z^n with x[0] + ... + x[n-1] = total and lower[i] <= x[i] <= upper[i],
-// ordered lexicographically (first part slowest).
+// within the support limits, ordered lexicographically (first part slowest).
+// The limits keep counting exact: they add a dimension for the number of
+// nonzero parts so far (one layer per allowed count) and split each part's
+// values into the ones below zero, zero, and the ones above.
 //
 // A space is immutable. Copies share the same table, and every member
 // function is safe to call from many threads at once.
@@ -46,11 +66,22 @@ class space {
           const std::vector<std::int32_t>& upper, counting mode = counting::exact);
     space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
           std::size_t parts, counting mode = counting::exact);
+    // With support limits. Also throws std::invalid_argument if a count is
+    // negative, min_count > max_count, or min_size is neither empty nor one
+    // value of at least 1 per part, and std::logic_error for logarithmic
+    // counting with limits that change the space, which it does not support.
+    space(std::int32_t total, const std::vector<std::int32_t>& lower,
+          const std::vector<std::int32_t>& upper, const support_limits& support,
+          counting mode = counting::exact);
+    space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
+          std::size_t parts, const support_limits& support, counting mode = counting::exact);
 
     std::size_t parts() const noexcept;
     std::int32_t total() const noexcept;
     const std::vector<std::int32_t>& lower() const noexcept;
     const std::vector<std::int32_t>& upper() const noexcept;
+    // For a subspace, the limits that apply to its own parts.
+    const support_limits& support() const noexcept;
 
     counting counting_mode() const noexcept;
     // Number of compositions. Throws std::logic_error for a logarithmic space.
@@ -82,9 +113,10 @@ class space {
     // The compositions of the remaining parts once the first prefix.size()
     // parts are fixed to prefix: a space of parts() - prefix.size() parts that
     // shares this space's table. Its rank r is rank begin + r here, where
-    // begin is the first rank of subtree(*this, prefix). Throws
-    // std::invalid_argument if the prefix leaves no part, breaks a bound, or
-    // has no completion.
+    // begin is the first rank of subtree(*this, prefix). Its support() is
+    // what the limits leave for the remaining parts. Throws
+    // std::invalid_argument if the prefix leaves no part, breaks a bound or a
+    // gap, or has no completion.
     space subspace(const std::vector<std::int32_t>& prefix) const;
 
     // Kernel view of this space. Valid while this space or a copy of it lives.

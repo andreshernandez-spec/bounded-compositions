@@ -1,11 +1,13 @@
 #include "bounded_compositions/region.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 #include "bounded_compositions/kernel/walk.hpp"
+#include "counts.hpp"
 
 namespace bounded_compositions {
 
@@ -13,23 +15,14 @@ namespace k = kernel;
 
 namespace {
 
-// P[row][kk], zero for kk < 0.
-natural prefix_sum(const k::space_view& v, int row, std::int32_t kk) {
-    if (kk < 0) return natural();
-    return natural::from_limbs(k::table_entry(v, row, kk),
-                               static_cast<std::size_t>(v.row_limbs[row]));
-}
-
-// N[row][kk]: ways to place kk into parts row..n-1.
-natural count(const k::space_view& v, int row, std::int32_t kk) {
-    if (kk < 0) return natural();
-    return prefix_sum(v, row, kk) - prefix_sum(v, row, kk - 1);
-}
+using detail::below_of;
+using detail::completions_of;
 
 struct prefix_place {
-    natural begin;      // rank of the first composition with the prefix
-    natural size;       // compositions with the prefix
-    std::int32_t left;  // shifted total left for the parts after the prefix
+    natural begin;       // rank of the first composition with the prefix
+    natural size;        // compositions with the prefix
+    std::int32_t left;   // shifted total left for the parts after the prefix
+    std::int32_t layer;  // layer after the prefix (kernel::space_view)
 };
 
 // Throws std::invalid_argument if the prefix is not the start of some composition.
@@ -52,19 +45,23 @@ prefix_place place_prefix(const space& s, const std::vector<std::int32_t>& prefi
     }
     prefix_place out;
     out.left = v.total;
+    out.layer = v.layer_base;
     for (std::size_t i = 0; i < prefix.size(); ++i) {
+        const int part = static_cast<int>(i);
         const std::int64_t y = static_cast<std::int64_t>(prefix[i]) - v.lo[i];
-        if (y < 0 || y > v.cap[i] || y > out.left) {
+        const std::int32_t step =
+            y < 0 || y > v.cap[i] ? -1 : k::step_of(v, part, static_cast<std::int32_t>(y));
+        if (step < 0 || y > out.left) {
             throw std::invalid_argument("bounded_compositions::subtree: prefix value " +
                                         std::to_string(prefix[i]) + " at part " +
                                         std::to_string(i) + " is out of range");
         }
-        const int row = static_cast<int>(i) + 1;
         const std::int32_t yy = static_cast<std::int32_t>(y);
-        out.begin += prefix_sum(v, row, out.left) - prefix_sum(v, row, out.left - yy);
+        out.begin += below_of(v, part, out.left, out.layer, yy);
         out.left -= yy;
+        out.layer += step;
     }
-    out.size = count(v, static_cast<int>(prefix.size()), out.left);
+    out.size = completions_of(v, static_cast<int>(prefix.size()), out.layer, out.left);
     if (out.size.is_zero()) {
         throw std::invalid_argument("bounded_compositions::subtree: prefix has no completion");
     }
@@ -122,14 +119,18 @@ std::vector<region> children(const space& s, const region& r) {
     if (d == s.parts()) return out;  // a single composition
     const k::space_view v = s.view();
     const prefix_place p = place_prefix(s, r.prefix());
-    const int row = static_cast<int>(d) + 1;
-    const std::int32_t top = std::min(v.cap[d], p.left);
-    const natural all_below = prefix_sum(v, row, p.left);
-    for (std::int32_t y = 0; y <= top; ++y) {
-        const natural size = count(v, row, p.left - y);
-        if (size.is_zero()) continue;
-        const natural begin = r.begin() + (all_below - prefix_sum(v, row, p.left - y));
-        out.push_back(interval(s, begin, begin + size));
+    const int part = static_cast<int>(d);
+    // Values in increasing order are children in rank order.
+    natural begin = r.begin();
+    for (int g = 0; g < v.segs[part]; ++g) {
+        const std::int32_t next = p.layer + k::seg_step(v, part, g);
+        const std::int32_t last = std::min(k::seg_last(v, part, g), p.left);
+        for (std::int32_t y = k::seg_first(v, part, g); y <= last; ++y) {
+            const natural size = completions_of(v, part + 1, next, p.left - y);
+            if (size.is_zero()) continue;
+            out.push_back(interval(s, begin, begin + size));
+            begin += size;
+        }
     }
     return out;
 }
@@ -199,20 +200,54 @@ std::vector<part_range> describe(const space& s, const region& r) {
     for (std::size_t i = 0; i < d; ++i) out[i] = {shared[i], shared[i]};
     if (d == n) return out;
 
-    // Inside the subtree of the shared prefix, part i takes every value that
-    // leaves the other free parts a feasible total.
     const prefix_place p = place_prefix(s, shared);
-    std::int64_t free_caps = 0;
-    for (std::size_t i = d; i < n; ++i) free_caps += v.cap[i];
-    for (std::size_t i = d; i < n; ++i) {
-        const std::int64_t others = free_caps - v.cap[i];
-        const std::int64_t lo = std::max<std::int64_t>(0, p.left - others);
-        const std::int64_t hi = std::min<std::int64_t>(v.cap[i], p.left);
-        out[i] = {static_cast<std::int32_t>(lo + v.lo[i]), static_cast<std::int32_t>(hi + v.lo[i])};
+    if (v.plain != 0) {
+        // Inside the subtree of the shared prefix, part i takes every value
+        // that leaves the other free parts a feasible total.
+        std::int64_t free_caps = 0;
+        for (std::size_t i = d; i < n; ++i) free_caps += v.cap[i];
+        for (std::size_t i = d; i < n; ++i) {
+            const std::int64_t others = free_caps - v.cap[i];
+            const std::int64_t lo = std::max<std::int64_t>(0, p.left - others);
+            const std::int64_t hi = std::min<std::int64_t>(v.cap[i], p.left);
+            out[i] = {static_cast<std::int32_t>(lo + v.lo[i]),
+                      static_cast<std::int32_t>(hi + v.lo[i])};
+        }
+    } else {
+        // Walk the states (k left, layer) reachable from the prefix that
+        // still have a completion, part by part, keeping the values used.
+        const std::size_t layers = static_cast<std::size_t>(v.layers);
+        const std::size_t states = (static_cast<std::size_t>(p.left) + 1) * layers;
+        std::vector<char> reach(states, 0), next(states, 0);
+        reach[static_cast<std::size_t>(p.left) * layers + static_cast<std::size_t>(p.layer)] = 1;
+        for (std::size_t i = d; i < n; ++i) {
+            const int part = static_cast<int>(i);
+            std::int32_t lo = std::numeric_limits<std::int32_t>::max();
+            std::int32_t hi = std::numeric_limits<std::int32_t>::min();
+            std::fill(next.begin(), next.end(), 0);
+            for (std::size_t st = 0; st < states; ++st) {
+                if (reach[st] == 0) continue;
+                const std::int32_t kk = static_cast<std::int32_t>(st / layers);
+                const std::int32_t c = static_cast<std::int32_t>(st % layers);
+                for (int g = 0; g < v.segs[part]; ++g) {
+                    const std::int32_t cn = c + k::seg_step(v, part, g);
+                    const std::int32_t last = std::min(k::seg_last(v, part, g), kk);
+                    for (std::int32_t y = k::seg_first(v, part, g); y <= last; ++y) {
+                        if (!k::has_completion(v, part + 1, cn, kk - y)) continue;
+                        lo = std::min(lo, y);
+                        hi = std::max(hi, y);
+                        next[static_cast<std::size_t>(kk - y) * layers +
+                             static_cast<std::size_t>(cn)] = 1;
+                    }
+                }
+            }
+            out[i] = {lo + v.lo[i], hi + v.lo[i]};
+            reach.swap(next);
+        }
     }
     if (!r.is_subtree()) {
         // Lexicographic order: part d runs from the first composition's value
-        // to the last one's, with every value between them present.
+        // to the last one's.
         out[d] = {s.unrank(r.begin())[d], s.unrank(r.end() - natural(1))[d]};
     }
     return out;

@@ -52,6 +52,7 @@ if not meson.is_subproject()
       'tests/test_sequence.cpp',
       'tests/test_smoke.cpp',
       'tests/test_space.cpp',
+      'tests/test_support.cpp',
       include_directories: include_directories('src'),
       dependencies: [bounded_compositions_dep, catch2])
     test('bounded_compositions_tests', tests, timeout: 300)
