@@ -93,8 +93,45 @@ void check_space(reader& in) {
         hi[i] = lo[i] + in.byte() % 7;
     }
     const std::int32_t total = static_cast<std::int32_t>(in.byte() % 40) - 10;
-    const bounded_compositions::space s(total, lo, hi);
+    // Support limits on about half the inputs.
+    bounded_compositions::support_limits sup;
+    if (in.byte() % 2 == 1) {
+        sup.min_count = static_cast<std::int32_t>(in.byte() % (n + 1));
+        sup.max_count = sup.min_count + static_cast<std::int32_t>(in.byte() % (n + 1));
+        if (in.byte() % 2 == 1) {
+            sup.min_size.resize(n);
+            for (auto& m : sup.min_size) m = 1 + in.byte() % 4;
+        }
+    }
+    const bool limited = sup != bounded_compositions::support_limits{};
+    const bounded_compositions::space s(total, lo, hi, sup);
     if (s.size() > natural(20000)) return;  // keep each input fast
+
+    // The size against a count over the box.
+    {
+        std::uint64_t brute = 0;
+        std::vector<std::int32_t> y = lo;
+        for (;;) {
+            std::int64_t sum = 0;
+            std::int32_t nonzero = 0;
+            bool ok = true;
+            for (std::size_t i = 0; i < n; ++i) {
+                sum += y[i];
+                if (y[i] == 0) continue;
+                ++nonzero;
+                if (!sup.min_size.empty() && std::abs(y[i]) < sup.min_size[i]) ok = false;
+            }
+            if (ok && sum == total && nonzero >= sup.min_count && nonzero <= sup.max_count) ++brute;
+            std::size_t i = 0;
+            while (i < n && y[i] == hi[i]) {
+                y[i] = lo[i];
+                ++i;
+            }
+            if (i == n) break;
+            ++y[i];
+        }
+        expect(s.size() == natural(brute), "size equals a count over the box");
+    }
     std::vector<std::int32_t> x(n);
     const bool any = s.first(x.data());
     expect(any == !s.empty(), "first succeeds exactly when non-empty");
@@ -206,7 +243,8 @@ void check_space(reader& in) {
     }
 
     // The logarithmic mode: same emptiness, close sizes, valid decodes, and
-    // encode inverts decode.
+    // encode inverts decode. It does not take support limits.
+    if (limited) return;
     const bounded_compositions::space logs(total, lo, hi,
                                            bounded_compositions::counting::logarithmic);
     expect(!logs.empty(), "logarithmic space is non-empty too");

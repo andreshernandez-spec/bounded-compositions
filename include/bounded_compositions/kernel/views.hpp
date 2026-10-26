@@ -13,11 +13,23 @@ namespace kernel {
 // A space after shifting every lower bound to 0: part i takes values
 // 0..cap[i] and the shifted values sum to `total`.
 //
-// `table` holds the prefix sums P[i][k] = sum_{j <= k} N[i][j] for rows
-// i = 0..n and k = 0..total, where N[i][k] counts the ways to place k into
-// parts i..n-1. Row i starts at limb offset row_offset[i] and stores each
-// entry in row_limbs[i] limbs. Row widths never increase with i, because
-// N[i][k] >= N[i+1][k].
+// Support limits (space.hpp) narrow this in two ways. A part's allowed values
+// are up to three segments, seg[9 i + 3 g .. + 2] = (first, last, step) for
+// g < segs[i], in increasing order: the values below zero, zero itself, and
+// the values above, with a semicontinuous part's gap left out. A limit on the
+// number of nonzero parts adds a layer c to the state, the nonzero parts so
+// far, which a value moves by its segment's step (1 for nonzero values when
+// the count is limited, otherwise 0). Unconstrained spaces have one segment
+// [0, cap[i]] per part and one layer, and are marked plain.
+//
+// `table` holds the prefix sums P[i][c][k] = sum_{j <= k} N[i][j][c] for rows
+// i = 0..n, layers c < layers and k = 0..total, where N[i][k][c] counts the
+// ways to place k into parts i..n-1 with c nonzero parts before part i. Row i
+// starts at limb offset row_offset[i], holds `layers` blocks of table_k
+// entries, and stores each entry in row_limbs[i] limbs. N[n][0][c] is 1 when
+// count_min <= c <= count_max and every other N[n] entry is 0. A subspace
+// shares its parent's table: layer_base is the nonzero parts of its prefix and
+// table_k the parent's total + 1.
 //
 // In the logarithmic counting mode there is no limb table (table, row_offset,
 // row_limbs and size are null). Instead log_prefix and log_suffix hold, for
@@ -41,10 +53,21 @@ struct space_view {
     const double* log_prefix;
     const double* log_suffix;
     std::int64_t log_stride;
+    const std::int32_t* seg;   // 9 per part: up to three (first, last, step)
+    const std::int32_t* segs;  // n entries, 1 to 3
+    std::int32_t layers;
+    std::int32_t layer_base;
+    std::int32_t count_min;
+    std::int32_t count_max;
+    std::int32_t table_k;
+    std::int32_t plain;
 };
 
-BCOMP_KERNEL const limb* table_entry(const space_view& s, int row, std::int32_t k) {
-    return s.table + s.row_offset[row] + static_cast<std::int64_t>(k) * s.row_limbs[row];
+// P[row][layer][k], for 0 <= k < table_k.
+BCOMP_KERNEL const limb* table_entry(const space_view& s, int row, std::int32_t layer,
+                                     std::int32_t k) {
+    return s.table + s.row_offset[row] +
+           (static_cast<std::int64_t>(layer) * s.table_k + k) * s.row_limbs[row];
 }
 
 // log P[row][k], with P[row][k] = 0 for k < 0 (log mode).
