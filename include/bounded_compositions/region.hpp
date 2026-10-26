@@ -75,15 +75,15 @@ std::vector<region> children(const space& s, const region& r);
 // one (empty pieces are dropped when r has fewer ranks than pieces).
 std::vector<region> split(const space& s, const region& r, std::uint32_t pieces);
 
-// Splits r into the 2^levels aligned blocks of its radical-inverse order:
-// with m = max(1, bitlen(size - 1)), block t holds ranks
-// begin + [t 2^(m-levels), (t+1) 2^(m-levels)), clipped to r, and empty blocks
-// are dropped. A rank_sequence over each block produces exactly the points of
-// rank_sequence over r that fall in that block, in the same order, so equal
-// budgets per block reproduce the sequence of r. For regions wider than 64
-// bits this holds for each block's first 2^(64 - levels) points; after them a
-// block's own sequence continues on a finer grid than r's. levels is capped
-// at m; throws std::invalid_argument for levels > 24.
+// Splits r along the grid of the radical-inverse order. With
+// [a 2^rho, (a + 1) 2^rho) the smallest aligned block holding r, the pieces
+// are r's parts of the aligned blocks of 2^(rho - levels) ranks: at most
+// 2^levels, in rank order. The order visits those blocks in turn, so the
+// blocks wholly inside r hold equal shares, within one point, of every prefix
+// of r's rank sequence; the two at r's ends can hold fewer. A rank sequence
+// over a piece gives exactly r's points in it, in order (sequence.hpp), and
+// sequence::overlap counts them. levels is capped at rho; throws
+// std::invalid_argument for levels > 24.
 std::vector<region> dyadic_split(const space& s, const region& r, int levels);
 
 struct part_range {

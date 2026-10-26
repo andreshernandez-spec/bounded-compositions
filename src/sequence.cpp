@@ -10,7 +10,7 @@
 #include "bounded_compositions/kernel/philox.hpp"
 #include "bounded_compositions/kernel/radical.hpp"
 #include "bounded_compositions/kernel/walk.hpp"
-#include "sobol.hpp"
+#include "sequence_data.hpp"
 
 namespace bounded_compositions {
 
@@ -56,104 +56,80 @@ std::vector<k::limb> low_bits(const k::limb* a, std::size_t n, int s) {
 
 namespace detail {
 
-struct sequence_data {
-    space dom;
-    sequence_kind kind = sequence_kind::rank;
-    std::uint64_t seed = 0;
-    std::uint64_t capacity = 0;
-    int rank_limbs = 1;
-    k::radical_view radical{};
-    std::vector<k::limb> mask_lo;
-    k::limb key[2] = {0, 0};
-    natural base;  // first rank of the region the sequence covers
-    natural span;  // ranks in that region
-    // coordinate: Sobol points decoded in `walk` (the space, or the subspace
-    // below a subtree's prefix), with `prefix` written in front.
-    space walk;
-    std::vector<std::int32_t> prefix;
-    sobol_tables sobol;
-    // Points come from decoding fractions: coordinate sequences, and iid
-    // sequences over a logarithmic space (Philox fractions).
-    bool decoded = false;
-
-    explicit sequence_data(const space& s) : dom(s), walk(s) {}
-
-    // Rank of point i into out[0..rank_limbs). For `rank`, t is the raw index
-    // of point i, already found by the caller.
-    void rank_of(std::uint64_t i, std::uint64_t t, k::limb* out) const {
-        const natural& size = span;
-        switch (kind) {
-            case sequence_kind::rank:
-                k::radical_rank(radical, k::radical_x(radical, t), out, rank_limbs);
-                break;
-            case sequence_kind::scaled_rank: {
-                std::vector<k::limb> wide(static_cast<std::size_t>(rank_limbs) + 1, 0);
-                k::limbs_copy(size.limbs(), as_int(size.limb_count()), wide.data(), rank_limbs);
-                k::limbs_mul_add_word(wide.data(), rank_limbs + 1, k::bit_reverse(i, 64), 0);
-                k::limbs_copy(wide.data() + 1, rank_limbs, out, rank_limbs);  // drop 2^64
-                break;
-            }
-            case sequence_kind::iid:
-                if (k::uniform_below(size.limbs(), as_int(size.limb_count()), key, i, out) !=
-                    k::status::ok) {
-                    throw std::logic_error("bounded_compositions: uniform draw failed");
-                }
-                break;
-            case sequence_kind::coordinate:
-                // Coordinate points are decoded, not unranked.
-                throw std::logic_error("bounded_compositions: rank_of on a coordinate sequence");
-        }
-        // Ranks above are within the region; shift them to the space.
-        k::limbs_add(out, rank_limbs, base.limbs(), as_int(base.limb_count()), out, rank_limbs);
-    }
-
-    void write_decoded_points(std::uint64_t first, std::uint64_t count, std::int32_t* out) const {
-        const k::space_view wv = walk.view();
-        const k::sobol_view sv = sobol.view();
-        const std::size_t n = dom.parts();
-        const std::size_t d = prefix.size();
-        const std::size_t dims = walk.parts() - 1;
-        std::vector<k::limb> u(dims + 4);
-        for (std::uint64_t p = 0; p < count; ++p) {
-            std::int32_t* x = out + p * n;
-            std::copy(prefix.begin(), prefix.end(), x);
-            if (kind == sequence_kind::coordinate) {
-                k::sobol_point(sv, first + p, u.data());
-            } else {  // iid over a logarithmic space: Philox fractions
-                for (std::size_t w = 0; w < dims; w += 4) {
-                    const k::limb counter[4] = {first + p, 0, static_cast<k::limb>(w / 4), 0};
-                    const k::philox_block b = k::philox4x64_10(counter, key);
-                    for (std::size_t j = 0; j < 4; ++j) u[w + j] = b.v[j];
-                }
-            }
-            if (k::decode(wv, u.data(), x + d) != k::status::ok) {
-                throw std::logic_error("bounded_compositions: decode failed in a sequence");
-            }
-        }
-    }
-
-    void write_points(std::uint64_t first, std::uint64_t count, std::int32_t* out) const {
-        if (decoded) {
-            write_decoded_points(first, count, out);
+void sequence_data::rank_of(std::uint64_t i, k::limb* out) const {
+    const natural& size = span;
+    switch (kind) {
+        case sequence_kind::rank:
+            // Absolute already: the view's origin is a rank of the space.
+            k::radical_rank(radical, k::radical_select(radical, i), out, rank_limbs);
             return;
+        case sequence_kind::scaled_rank: {
+            std::vector<k::limb> wide(static_cast<std::size_t>(rank_limbs) + 1, 0);
+            k::limbs_copy(size.limbs(), as_int(size.limb_count()), wide.data(), rank_limbs);
+            k::limbs_mul_add_word(wide.data(), rank_limbs + 1, k::bit_reverse(i, 64), 0);
+            k::limbs_copy(wide.data() + 1, rank_limbs, out, rank_limbs);  // drop 2^64
+            break;
         }
-        const k::space_view sv = dom.view();
-        const std::size_t n = dom.parts();
-        std::vector<k::limb> rank(static_cast<std::size_t>(rank_limbs));
-        std::uint64_t t = kind == sequence_kind::rank ? k::radical_raw_index(radical, first) : 0;
-        for (std::uint64_t p = 0; p < count; ++p) {
-            if (kind == sequence_kind::rank) {
-                while (!k::radical_keeps(radical, t)) ++t;
+        case sequence_kind::iid:
+            if (k::uniform_below(size.limbs(), as_int(size.limb_count()), key, i, out) !=
+                k::status::ok) {
+                throw std::logic_error("bounded_compositions: uniform draw failed");
             }
-            rank_of(first + p, t, rank.data());
-            if (k::unrank(sv, rank.data(), rank_limbs, out + p * n) != k::status::ok) {
-                throw std::logic_error(
-                    "bounded_compositions: sequence produced a rank out of range");
+            break;
+        case sequence_kind::coordinate:
+            // Coordinate points are decoded, not unranked.
+            throw std::logic_error("bounded_compositions: rank_of on a coordinate sequence");
+    }
+    // Ranks above are within the region; shift them to the space.
+    k::limbs_add(out, rank_limbs, base.limbs(), as_int(base.limb_count()), out, rank_limbs);
+}
+
+void sequence_data::write_decoded_points(std::uint64_t first, std::uint64_t count,
+                                         std::int32_t* out) const {
+    const k::space_view wv = walk.view();
+    const k::sobol_view sv = sobol.view();
+    const std::size_t n = dom.parts();
+    const std::size_t d = prefix.size();
+    const std::size_t dims = walk.parts() - 1;
+    std::vector<k::limb> u(dims + 4);
+    for (std::uint64_t p = 0; p < count; ++p) {
+        std::int32_t* x = out + p * n;
+        std::copy(prefix.begin(), prefix.end(), x);
+        if (kind == sequence_kind::coordinate) {
+            k::sobol_point(sv, first + p, u.data());
+        } else {  // iid over a logarithmic space: Philox fractions
+            for (std::size_t w = 0; w < dims; w += 4) {
+                const k::limb counter[4] = {first + p, 0, static_cast<k::limb>(w / 4), 0};
+                const k::philox_block b = k::philox4x64_10(counter, key);
+                for (std::size_t j = 0; j < 4; ++j) u[w + j] = b.v[j];
             }
-            ++t;
+        }
+        if (k::decode(wv, u.data(), x + d) != k::status::ok) {
+            throw std::logic_error("bounded_compositions: decode failed in a sequence");
         }
     }
-};
+}
+
+void sequence_data::write_points(std::uint64_t first, std::uint64_t count,
+                                 std::int32_t* out) const {
+    if (decoded) {
+        write_decoded_points(first, count, out);
+        return;
+    }
+    const k::space_view sv = dom.view();
+    const std::size_t n = dom.parts();
+    std::vector<k::limb> rank(static_cast<std::size_t>(rank_limbs));
+    for (std::uint64_t p = 0; p < count; ++p) {
+        rank_of(first + p, rank.data());
+        if (k::unrank(sv, rank.data(), rank_limbs, out + p * n) != k::status::ok) {
+            throw std::logic_error("bounded_compositions: sequence produced a rank out of range");
+        }
+    }
+}
+
+bool same_space(const space& a, const space& b) {
+    return a.total() == b.total() && a.lower() == b.lower() && a.upper() == b.upper();
+}
 
 }  // namespace detail
 
@@ -197,45 +173,51 @@ std::shared_ptr<detail::sequence_data> base_data(const space& s, const region* r
     return d;
 }
 
-// Fills the radical view for ranks [0, size) with the given m-bit mask.
-void set_radical(detail::sequence_data& d, const std::vector<k::limb>& mask) {
+natural from_vector(const std::vector<k::limb>& a) {
+    return natural::from_limbs(a.data(), a.size());
+}
+
+// 2^bits.
+natural power_of_two(int bits) {
+    std::vector<k::limb> a(static_cast<std::size_t>(bits / 64) + 1, 0);
+    a.back() = k::limb{1} << (bits % 64);
+    return from_vector(a);
+}
+
+k::limb low_word(const std::vector<k::limb>& a) { return a.empty() ? 0 : a[0]; }
+
+// Fills the view of the region [base, base + span) in the order of d.mask
+// (kernel/radical.hpp).
+void set_radical(detail::sequence_data& d) {
     const natural& size = d.span;
     if (size.is_zero()) return;
-    const natural last = size - natural(1);
-    const int m = std::max(1, last.bit_length());
-    const int w = std::min(m, 64);
-    const int shift = m - w;
+    const int f = std::max(0, (size - natural(1)).bit_length() - 64);
+    const std::vector<k::limb>& mask = d.mask;
 
-    const std::vector<k::limb> size_hi = shift_right(size.limbs(), size.limb_count(), shift);
-    const std::vector<k::limb> size_lo = low_bits(size.limbs(), size.limb_count(), shift);
-    const std::vector<k::limb> mask_hi = shift_right(mask.data(), mask.size(), shift);
-    d.mask_lo = low_bits(mask.data(), mask.size(), shift);
+    // x0: the first rank of the region congruent to M modulo 2^f.
+    const natural mask_low = from_vector(low_bits(mask.data(), mask.size(), f));
+    const natural base_low = from_vector(low_bits(d.base.limbs(), d.base.limb_count(), f));
+    const natural up =
+        mask_low >= base_low ? mask_low - base_low : mask_low + power_of_two(f) - base_low;
+    const natural x0 = d.base + up;
+    const natural end = d.base + size;
+    if (x0 >= end) throw std::logic_error("bounded_compositions: empty radical class");
+    // C - 1 = (end - 1 - x0) >> f, below 2^64 (radical.hpp).
+    const natural rest = end - natural(1) - x0;
+    const natural last = from_vector(shift_right(rest.limbs(), rest.limb_count(), f));
+    if (!last.fits_u64()) throw std::logic_error("bounded_compositions: radical class too large");
 
-    // threshold = size_hi + (mask_lo < size_lo); all raw indices are kept
-    // when it reaches 2^w.
-    const bool bump = k::limbs_cmp(d.mask_lo.data(), as_int(d.mask_lo.size()), size_lo.data(),
-                                   as_int(size_lo.size())) < 0;
-    std::vector<k::limb> threshold(size_hi.size() + 1, 0);
-    const k::limb one[1] = {1};
-    k::limbs_add(size_hi.data(), as_int(size_hi.size()), one, bump ? 1 : 0, threshold.data(),
-                 as_int(threshold.size()));
-    const int threshold_bits = k::limbs_bit_length(threshold.data(), as_int(threshold.size()));
-
+    d.origin.assign(x0.limbs(), x0.limbs() + x0.limb_count());
+    if (d.origin.empty()) d.origin.push_back(0);
     k::radical_view& v = d.radical;
-    v.index_bits = w;
-    v.shift = shift;
-    v.mask_hi = mask_hi.empty() ? 0 : mask_hi[0];
-    if (w < 64) v.mask_hi &= (k::limb{1} << w) - 1;
-    v.mask_lo = d.mask_lo.data();
-    v.mask_lo_limbs = as_int(d.mask_lo.size());
-    v.accept_all = threshold_bits > w ? 1 : 0;  // threshold >= 2^w
-    v.threshold = v.accept_all ? 0 : threshold[0];
-    if (v.accept_all) {
-        v.capacity = w == 64 ? std::numeric_limits<std::uint64_t>::max() : (std::uint64_t{1} << w);
-    } else {
-        v.capacity = v.threshold;
-    }
-    d.capacity = v.capacity;
+    v.origin = d.origin.data();
+    v.origin_limbs = as_int(d.origin.size());
+    v.shift = f;
+    v.origin_high = low_word(shift_right(x0.limbs(), x0.limb_count(), f));
+    v.mask = low_word(shift_right(mask.data(), mask.size(), f));
+    v.last = last.is_zero() ? 0 : last.to_u64();
+    const std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
+    d.capacity = v.last == most ? most : v.last + 1;
 }
 
 std::vector<k::limb> mask_bits(std::uint64_t seed, int bits) {
@@ -318,9 +300,7 @@ natural sequence::rank_at(std::uint64_t i) const {
         return data_->dom.rank(x.data());  // throws for a logarithmic space
     }
     std::vector<k::limb> rank(static_cast<std::size_t>(data_->rank_limbs));
-    const std::uint64_t t =
-        data_->kind == sequence_kind::rank ? k::radical_raw_index(data_->radical, i) : 0;
-    data_->rank_of(i, t, rank.data());
+    data_->rank_of(i, rank.data());
     return natural::from_limbs(rank.data(), rank.size());
 }
 
@@ -333,17 +313,85 @@ std::uint64_t sequence::take(std::uint64_t count, std::int32_t* out, executor* e
     return begin;
 }
 
+std::uint64_t sequence::reserve(std::uint64_t count, std::uint64_t& got) {
+    std::uint64_t begin = cursor_.load(std::memory_order_relaxed);
+    std::uint64_t n = 0;
+    do {
+        n = std::min(count, data_->capacity - begin);
+    } while (!cursor_.compare_exchange_weak(begin, begin + n, std::memory_order_relaxed));
+    got = n;
+    return begin;
+}
+
+namespace {
+
+// key(a) <= key(b) for ranks of a space with mask M: keys are bit reversals of
+// x ^ M, so they compare at the lowest bit where a and b differ.
+bool key_not_after(const natural& a, const natural& b, const std::vector<k::limb>& mask) {
+    const std::size_t words = std::max(a.limb_count(), b.limb_count());
+    for (std::size_t i = 0; i < words; ++i) {
+        k::limb diff = k::limb_at(a.limbs(), as_int(a.limb_count()), as_int(i)) ^
+                       k::limb_at(b.limbs(), as_int(b.limb_count()), as_int(i));
+        if (diff == 0) continue;
+        int bit = 0;
+        while ((diff & 1u) == 0) {
+            diff >>= 1;
+            ++bit;
+        }
+        const k::limb a_bit = k::limb_at(a.limbs(), as_int(a.limb_count()), as_int(i)) >> bit;
+        const k::limb m_bit = k::limb_at(mask.data(), as_int(mask.size()), as_int(i)) >> bit;
+        return ((a_bit ^ m_bit) & 1u) == 0;
+    }
+    return true;  // a == b
+}
+
+}  // namespace
+
+std::uint64_t sequence::overlap(const sequence& outer, std::uint64_t n) const {
+    const detail::sequence_data& in = *data_;
+    const detail::sequence_data& out = *outer.data_;
+    if (in.kind != sequence_kind::rank || out.kind != sequence_kind::rank ||
+        !detail::same_space(in.dom, out.dom) || in.mask != out.mask) {
+        throw std::invalid_argument(
+            "bounded_compositions::sequence::overlap: needs two rank sequences of the same space "
+            "and seed");
+    }
+    if (in.base < out.base || in.base + in.span > out.base + out.span) {
+        throw std::invalid_argument(
+            "bounded_compositions::sequence::overlap: the region is not inside the outer one");
+    }
+    check_range(0, n, out.capacity);
+    if (n == 0 || in.capacity == 0) return 0;
+    // The outer's first n points are its ranks with key up to that of point
+    // n - 1; this sequence's ranks with such keys are its first ones.
+    const natural last = outer.rank_at(n - 1);
+    std::uint64_t lo = 0;
+    std::uint64_t hi = in.capacity;
+    while (lo < hi) {
+        const std::uint64_t mid = lo + (hi - lo) / 2;
+        if (key_not_after(rank_at(mid), last, in.mask)) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+void sequence::resume_after(const sequence& outer) { seek(overlap(outer, outer.position())); }
+
 namespace {
 
 std::shared_ptr<detail::sequence_data> make_rank(const space& s, const region* r, bool scramble,
                                                  std::uint64_t seed) {
     auto d = base_data(s, r, sequence_kind::rank, scramble ? seed : 0);
-    if (!d->span.is_zero()) {
-        const int m = std::max(1, (d->span - natural(1)).bit_length());
-        set_radical(*d, scramble
-                            ? mask_bits(seed, m)
-                            : std::vector<k::limb>(static_cast<std::size_t>((m + 63) / 64), 0));
+    if (!s.empty()) {
+        // One order per space and seed: the mask spans the space's rank bits.
+        const int m = std::max(1, (s.size() - natural(1)).bit_length());
+        d->mask = scramble ? mask_bits(seed, m)
+                           : std::vector<k::limb>(static_cast<std::size_t>((m + 63) / 64), 0);
     }
+    set_radical(*d);
     return d;
 }
 

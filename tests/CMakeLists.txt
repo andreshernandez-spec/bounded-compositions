@@ -17,6 +17,7 @@ include(Catch)
 add_executable(bounded_compositions_tests
   test_coordinate.cpp
   test_executor.cpp
+  test_fresh.cpp
   test_limbs.cpp
   test_log_counting.cpp
   test_natural.cpp
@@ -36,6 +37,7 @@ add_executable(bounded_compositions_limit_tests
   test_limits.cpp
   ${PROJECT_SOURCE_DIR}/src/codec.cpp
   ${PROJECT_SOURCE_DIR}/src/executor.cpp
+  ${PROJECT_SOURCE_DIR}/src/fresh.cpp
   ${PROJECT_SOURCE_DIR}/src/natural.cpp
   ${PROJECT_SOURCE_DIR}/src/region.cpp
   ${PROJECT_SOURCE_DIR}/src/sequence.cpp

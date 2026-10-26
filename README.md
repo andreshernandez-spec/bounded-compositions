@@ -16,8 +16,12 @@ that splits into regions that can be sampled independently.
 - A compiled host library, plus a small header-only kernel layer for the
   per-point work, kept compatible with GPU compilation
   ([docs/kernel-rules.md](docs/kernel-rules.md)).
-- Thread-safe by construction: shared data is immutable, and point `i` of a
-  sequence depends only on the space, the seed and `i`.
+- Thread-safe: a sequence's data is immutable, and point `i` depends only on
+  the space, the seed and `i`. The set of evaluated points is shared through
+  locks.
+- No repeats: a region lists its compositions in the space's order, so it
+  resumes where earlier sampling stopped; a set of evaluated points covers
+  other orders and sequence kinds.
 - Exact multiprecision counting, or logarithmic counting for spaces too large
   for exact tables.
 

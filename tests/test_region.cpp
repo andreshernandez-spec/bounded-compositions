@@ -307,7 +307,7 @@ TEST_CASE("dyadic blocks reproduce the sequence on a space wider than 64 bits") 
     }
 }
 
-TEST_CASE("region sequences stay inside the region and match the subspace") {
+TEST_CASE("region sequences stay inside the region and follow the space's order") {
     const bc::space s(24, composition(6, 0), composition(6, 9));
     const bc::region t = bc::subtree(s, composition{2, 5});
     const bc::space sub = s.subspace(composition{2, 5});
@@ -328,11 +328,17 @@ TEST_CASE("region sequences stay inside the region and match the subspace") {
         }
         if (seq.kind() != bc::sequence_kind::iid) REQUIRE(seen.size() == count);  // no repeats
     }
-    // The region's rank sequence is the subspace's, shifted by the prefix.
-    const bc::sequence in_region = bc::rank_sequence(s, t);
-    const bc::sequence in_sub = bc::rank_sequence(sub);
-    for (std::uint64_t i = 0; i < in_sub.capacity(); ++i) {
-        CHECK(in_region.rank_at(i) == t.begin() + in_sub.rank_at(i));
+    // The region's rank sequence is the space's, keeping the ranks in t.
+    for (int scrambled = 0; scrambled < 2; ++scrambled) {
+        const bc::sequence global = scrambled ? bc::rank_sequence(s, 9) : bc::rank_sequence(s);
+        const bc::sequence in_region =
+            scrambled ? bc::rank_sequence(s, t, 9) : bc::rank_sequence(s, t);
+        std::uint64_t next = 0;
+        for (std::uint64_t i = 0; i < global.capacity(); ++i) {
+            const natural r = global.rank_at(i);
+            if (t.contains(r)) CHECK(in_region.rank_at(next++) == r);
+        }
+        CHECK(next == in_region.capacity());
     }
     CHECK_THROWS_AS(bc::rank_sequence(sub, t), std::out_of_range);  // t lies past sub's ranks
 }

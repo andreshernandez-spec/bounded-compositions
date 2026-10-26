@@ -13,6 +13,7 @@ bounded_compositions_kernel_dep = declare_dependency(include_directories: inc)
 bounded_compositions_lib = library('bounded_compositions',
   'src/codec.cpp',
   'src/executor.cpp',
+  'src/fresh.cpp',
   'src/natural.cpp',
   'src/region.cpp',
   'src/sequence.cpp',
@@ -43,6 +44,7 @@ if not meson.is_subproject()
     tests = executable('bounded_compositions_tests',
       'tests/test_coordinate.cpp',
       'tests/test_executor.cpp',
+      'tests/test_fresh.cpp',
       'tests/test_limbs.cpp',
       'tests/test_log_counting.cpp',
       'tests/test_natural.cpp',
@@ -54,7 +56,8 @@ if not meson.is_subproject()
       dependencies: [bounded_compositions_dep, catch2])
     test('bounded_compositions_tests', tests, timeout: 300)
     limit_tests = executable('bounded_compositions_limit_tests',
-      'tests/test_limits.cpp', 'src/codec.cpp', 'src/executor.cpp', 'src/natural.cpp', 'src/region.cpp',
+      'tests/test_limits.cpp', 'src/codec.cpp', 'src/executor.cpp', 'src/fresh.cpp', 'src/natural.cpp',
+      'src/region.cpp',
       'src/sequence.cpp', 'src/sobol.cpp', 'src/sobol_directions.cpp',
       'src/space.cpp', 'src/version.cpp',
       include_directories: inc,
