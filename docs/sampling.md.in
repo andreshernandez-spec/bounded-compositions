@@ -113,7 +113,12 @@ block's first `2^(64 - j)` points.
 ### 3.2 `scaled_rank_sequence`: the earlier mapping
 
 Point `i` is `floor(phi(i) size)`, with `phi` the base-2 radical inverse of the
-64-bit index. This is the mapping of the 2013-2015 code.
+64-bit index. The 2013-2015 code used it in two passes: first `2^k + 1`
+evenly spaced ranks, close to this mapping's first `2^k` points, then this
+mapping from index `2^k + 1` on, with the second pass sized from the share of
+first-pass points that were accepted. `rank_sequence` does both passes as one
+sequence: its first `2^j` points are an even grid and later points continue
+it. The scaled mapping is kept for comparison only (section 7).
 
 For `i < 2^j <= size`, the values `phi(i)` are the multiples of `2^-j`, at
 least `size / 2^j >= 1` ranks apart after scaling, so the first
@@ -284,23 +289,24 @@ version is possible if it becomes a bottleneck.
 - **Later parts:** rank order spreads the leading parts finely and the trailing
   parts no better than independent draws; the coordinate sequence's advantage
   also shrinks along the part order. The part order given to the space matters.
+- **Region sequences after the whole space:** a region's rank sequence is the
+  radical-inverse order of the region itself, which equals the whole space's
+  order restricted to the region only for dyadic blocks. A region sampled from
+  its first point after the whole space has been sampled gives the earlier
+  points in it again: a dyadic block from its first point, any other region at
+  the latest when it has covered the region.
 
-## 7. Decisions for sign-off
+## 7. Decisions
 
-1. **Default sequence.** The measurements suggest `rank_sequence` when coverage,
-   no repeats, region splitting or exhaustive enumeration matter, and the
-   scrambled `coordinate_sequence` when every part should be spread evenly. Is
-   that the guidance to document, or should one of them be the single default?
-2. **Sample sizes for rank order.** `rank_sequence` is closest to even at its
-   level counts `A_j`, not at powers of two. A helper returning those counts
-   would let callers pick complete sizes. Worth adding?
-3. **The scaled mapping.** It spreads better at powers of two while N stays
-   below half the space, but repeats ranks after that and does not split into
-   regions exactly. Keep it as a comparison only, or offer it as an option for
-   samples far smaller than the space?
-4. **`encode` speed.** Optimise now, or when an optimiser needs it?
-5. **Phase 2.** Approve moving on to constrained spaces (cardinality and group
-   limits)?
+1. **Default sequence:** `rank_sequence`, for its coverage, lack of repeats and
+   exact region splits. The scrambled `coordinate_sequence` is the alternative
+   when every part should be spread evenly.
+2. **Sample sizes for rank order:** no helper yet. The level counts `A_j` are
+   needed region by region, so the helper is left to the region search.
+3. **Scaled mapping:** kept for comparison only. It covers the whole space,
+   with no regions or scrambling, and nothing else in the library uses it.
+4. **`encode` speed:** acceptable for now (section 5.3), to be optimised when an
+   optimiser needs it.
 
 ## 8. Reproducing
 
