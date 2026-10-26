@@ -1,10 +1,14 @@
-// Sampling without repeating points that were already evaluated.
+// Sampling without repeating points that were already evaluated, and with
+// limits the counting table does not hold.
 //
 // Rank sequences that share a space and seed never repeat each other when a
 // region resumes after an outer sequence (sequence::overlap). Everything else
 // (other orders, other seeds, coordinate and iid sequences, and points from
 // outside the library) goes through a visited_set: fresh_sampler skips the
-// points already in it.
+// points already in it. Limits the space does not count, such as general
+// linear inequalities, go through a filter: fresh_sampler skips the points it
+// rejects and counts them, so a sampler per region measures that region's
+// acceptance.
 #ifndef BCOMP_FRESH_HPP
 #define BCOMP_FRESH_HPP
 
@@ -53,7 +57,14 @@ class visited_set {
     std::atomic<std::uint64_t> size_{0};
 };
 
-// Points of a sequence's region that are not in a visited set yet.
+// A filter for limits the space does not count: returns true to keep x. It
+// is called from the threads of the executor given to take() and from
+// concurrent take() calls, so it must be safe to call from several threads,
+// and it must give the same answer for the same x.
+using accept_fn = bool (*)(void* context, const std::int32_t* x);
+
+// Points of a sequence's region that are not in a visited set yet, and that
+// a filter accepts.
 //
 // take() draws from the sequence in order, skips the points already visited
 // and adds the ones it returns. A rank sequence covers its region without
@@ -61,12 +72,16 @@ class visited_set {
 // (for regions under 2^64 points). Coordinate and iid sequences can repeat
 // points or miss some: after `patience` visited points in a row within one
 // call, the sampler moves for good to the unscrambled rank sequence of the
-// same region, which lists whatever is left. Safe to call from many threads
-// at once; they share the set and the sequences' positions.
+// same region, which lists whatever is left; rejected points count towards
+// the run too. Rejected points are not added to the set. Safe to call from
+// many threads at once; they share the set and the sequences' positions.
 class fresh_sampler {
   public:
     // Throws std::invalid_argument if the set belongs to another space.
     fresh_sampler(const sequence& source, visited_set& visited, std::uint64_t patience = 1024);
+    // With a filter; accept may not be null.
+    fresh_sampler(const sequence& source, visited_set& visited, accept_fn accept, void* context,
+                  std::uint64_t patience = 1024);
 
     // Writes up to count points that were not visited, in parts() values per
     // point, adds them to the set and returns how many. Fewer than count means
@@ -80,6 +95,10 @@ class fresh_sampler {
     bool switched() const noexcept;
     // Visited points passed over so far.
     std::uint64_t skipped() const noexcept;
+    // Points handed out, and points the filter rejected, so far. Their ratio
+    // is the acceptance of the region.
+    std::uint64_t accepted() const noexcept;
+    std::uint64_t rejected() const noexcept;
 
   private:
     static sequence fallback_for(const sequence& source);
@@ -88,9 +107,13 @@ class fresh_sampler {
     sequence fallback_;
     visited_set& visited_;
     std::uint64_t patience_;
+    accept_fn accept_ = nullptr;
+    void* context_ = nullptr;
     std::atomic<bool> switched_{false};
     std::atomic<bool> exhausted_{false};
     std::atomic<std::uint64_t> skipped_{0};
+    std::atomic<std::uint64_t> accepted_{0};
+    std::atomic<std::uint64_t> rejected_{0};
 };
 
 }  // namespace bounded_compositions

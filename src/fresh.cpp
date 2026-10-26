@@ -207,6 +207,40 @@ void write_block(void* context, std::uint64_t block) {
     }
 }
 
+// The points of the candidates (unranked, or copied for decoded sequences)
+// and whether the filter keeps them.
+struct filter_job {
+    const detail::sequence_data* data;
+    const std::vector<std::uint64_t>* candidates;  // indices into the batch
+    int width;
+    const k::limb* ranks;
+    const std::int32_t* points;
+    std::int32_t* out;
+    std::uint8_t* keep;
+    accept_fn accept;
+    void* context;
+};
+
+void filter_block(void* context, std::uint64_t block) {
+    const filter_job& job = *static_cast<const filter_job*>(context);
+    const detail::sequence_data& d = *job.data;
+    const std::size_t parts = d.dom.parts();
+    const std::size_t w = static_cast<std::size_t>(job.width);
+    const k::space_view v = d.dom.view();
+    const std::uint64_t first = block * block_points;
+    const std::uint64_t n = std::min<std::uint64_t>(block_points, job.candidates->size() - first);
+    for (std::uint64_t p = first; p < first + n; ++p) {
+        const std::uint64_t at = (*job.candidates)[p];
+        std::int32_t* x = job.out + p * parts;
+        if (d.decoded) {
+            std::copy(job.points + at * parts, job.points + (at + 1) * parts, x);
+        } else if (k::unrank(v, job.ranks + at * w, job.width, x) != k::status::ok) {
+            throw std::logic_error("bounded_compositions: sequence produced a rank out of range");
+        }
+        job.keep[p] = job.accept(job.context, x) ? std::uint8_t{1} : std::uint8_t{0};
+    }
+}
+
 void run_blocks(executor* ex, std::uint64_t items, executor::block_fn fn, void* context) {
     if (items == 0) return;
     serial_executor serial;
@@ -233,12 +267,28 @@ fresh_sampler::fresh_sampler(const sequence& source, visited_set& visited, std::
     }
 }
 
+fresh_sampler::fresh_sampler(const sequence& source, visited_set& visited, accept_fn accept,
+                             void* context, std::uint64_t patience)
+    : fresh_sampler(source, visited, patience) {
+    if (accept == nullptr) {
+        throw std::invalid_argument("bounded_compositions::fresh_sampler: null filter");
+    }
+    accept_ = accept;
+    context_ = context;
+}
+
 bool fresh_sampler::exhausted() const noexcept {
     return exhausted_.load(std::memory_order_relaxed);
 }
 bool fresh_sampler::switched() const noexcept { return switched_.load(std::memory_order_relaxed); }
 std::uint64_t fresh_sampler::skipped() const noexcept {
     return skipped_.load(std::memory_order_relaxed);
+}
+std::uint64_t fresh_sampler::accepted() const noexcept {
+    return accepted_.load(std::memory_order_relaxed);
+}
+std::uint64_t fresh_sampler::rejected() const noexcept {
+    return rejected_.load(std::memory_order_relaxed);
 }
 
 std::uint64_t fresh_sampler::take(std::uint64_t count, std::int32_t* out, executor* ex) {
@@ -248,8 +298,10 @@ std::uint64_t fresh_sampler::take(std::uint64_t count, std::int32_t* out, execut
     std::vector<k::limb> ranks;
     std::vector<std::int32_t> points;
     std::vector<std::uint64_t> kept;
+    std::vector<std::int32_t> found;
+    std::vector<std::uint8_t> keep;
     std::uint64_t written = 0;
-    std::uint64_t run = 0;  // visited points in a row
+    std::uint64_t run = 0;  // visited or rejected points in a row
     while (written < count) {
         const bool on_fallback = switched_.load(std::memory_order_relaxed);
         sequence& from = on_fallback ? fallback_ : source_;
@@ -270,20 +322,58 @@ std::uint64_t fresh_sampler::take(std::uint64_t count, std::int32_t* out, execut
         ranks_job rj{&d, begin, got, width, ranks.data(), points.data()};
         run_blocks(ex, got, &ranks_block, &rj);
 
+        // A visited or rejected point; after `patience` in a row a source
+        // that does not cover its region gives way to the rank sequence.
+        auto miss = [&](std::atomic<std::uint64_t>& counter) {
+            counter.fetch_add(1, std::memory_order_relaxed);
+            if (!covers && ++run >= patience_) switched_.store(true, std::memory_order_relaxed);
+        };
+
         // In order, so one caller always gets the same points.
         kept.clear();
+        if (accept_ == nullptr) {
+            for (std::uint64_t p = 0; p < got; ++p) {
+                if (visited_.insert_key(ranks.data() + p * w)) {
+                    kept.push_back(p);
+                    run = 0;
+                } else {
+                    miss(skipped_);
+                }
+            }
+            write_job wj{&d, &kept, width, ranks.data(), points.data(), out + written * parts};
+            run_blocks(ex, kept.size(), &write_block, &wj);
+            written += kept.size();
+            accepted_.fetch_add(kept.size(), std::memory_order_relaxed);
+            continue;
+        }
+        // With a filter: drop visited points, filter the rest (in parallel),
+        // then claim the accepted ones in order.
         for (std::uint64_t p = 0; p < got; ++p) {
-            if (visited_.insert_key(ranks.data() + p * w)) {
-                kept.push_back(p);
-                run = 0;
+            if (visited_.contains_key(ranks.data() + p * w)) {
+                miss(skipped_);
             } else {
-                skipped_.fetch_add(1, std::memory_order_relaxed);
-                if (!covers && ++run >= patience_) switched_.store(true, std::memory_order_relaxed);
+                kept.push_back(p);
             }
         }
-        write_job wj{&d, &kept, width, ranks.data(), points.data(), out + written * parts};
-        run_blocks(ex, kept.size(), &write_block, &wj);
-        written += kept.size();
+        found.assign(kept.size() * parts, 0);
+        keep.assign(kept.size(), std::uint8_t{0});
+        filter_job fj{&d,           &kept,       width,   ranks.data(), points.data(),
+                      found.data(), keep.data(), accept_, context_};
+        run_blocks(ex, kept.size(), &filter_block, &fj);
+        for (std::size_t q = 0; q < kept.size(); ++q) {
+            if (keep[q] == 0) {
+                miss(rejected_);
+            } else if (visited_.insert_key(ranks.data() + kept[q] * w)) {
+                std::copy(found.begin() + static_cast<std::ptrdiff_t>(q * parts),
+                          found.begin() + static_cast<std::ptrdiff_t>((q + 1) * parts),
+                          out + written * parts);
+                ++written;
+                accepted_.fetch_add(1, std::memory_order_relaxed);
+                run = 0;
+            } else {
+                miss(skipped_);  // another thread took it meanwhile
+            }
+        }
     }
     return written;
 }

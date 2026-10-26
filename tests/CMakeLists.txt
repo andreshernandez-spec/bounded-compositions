@@ -23,6 +23,7 @@ add_executable(bounded_compositions_tests
   test_log_counting.cpp
   test_natural.cpp
   test_region.cpp
+  test_repair.cpp
   test_sequence.cpp
   test_smoke.cpp
   test_space.cpp
@@ -42,6 +43,7 @@ add_executable(bounded_compositions_limit_tests
   ${PROJECT_SOURCE_DIR}/src/fresh.cpp
   ${PROJECT_SOURCE_DIR}/src/natural.cpp
   ${PROJECT_SOURCE_DIR}/src/region.cpp
+  ${PROJECT_SOURCE_DIR}/src/repair.cpp
   ${PROJECT_SOURCE_DIR}/src/sequence.cpp
   ${PROJECT_SOURCE_DIR}/src/sobol.cpp
   ${PROJECT_SOURCE_DIR}/src/sobol_directions.cpp

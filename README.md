@@ -26,6 +26,9 @@ that splits into regions that can be sampled independently.
 - No repeats: a region lists its compositions in the space's order, so it
   resumes where earlier sampling stopped; a set of evaluated points covers
   other orders and sequence kinds.
+- Limits the table does not count (general linear inequalities, say) go
+  through a filter that rejects points and counts the acceptance per region.
+  `repair` maps any real vector to the nearest composition of a space.
 - Exact multiprecision counting, or logarithmic counting for spaces too large
   for exact tables.
 

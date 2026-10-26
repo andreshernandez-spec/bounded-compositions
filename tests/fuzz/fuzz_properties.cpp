@@ -169,6 +169,25 @@ void check_space(reader& in) {
     }
     expect(natural(count) == s.size(), "walk visits size() compositions");
 
+    // repair gives a composition no farther from z than any other.
+    if (count > 0) {
+        std::vector<double> z(n);
+        for (std::size_t i = 0; i < n; ++i) z[i] = static_cast<double>(in.byte() % 61) / 4.0 - 6.0;
+        const std::vector<std::int32_t> fixed_up = bounded_compositions::repair(s, z);
+        expect(s.contains(fixed_up), "repair gives a composition of the space");
+        auto dist = [&](const std::int32_t* y) {
+            double d = 0.0;
+            for (std::size_t i = 0; i < n; ++i) d += (y[i] - z[i]) * (y[i] - z[i]);
+            return d;
+        };
+        const double got = dist(fixed_up.data());
+        std::vector<std::int32_t> y(n);
+        s.first(y.data());
+        do {
+            expect(dist(y.data()) >= got - 1e-9 * std::max(1.0, got), "repair is nearest");
+        } while (s.next(y.data()));
+    }
+
     // A rank sequence, scrambled or not, is a permutation of the ranks.
     const std::uint64_t seed = in.word();
     const bounded_compositions::sequence seq = (seed & 1u) != 0
