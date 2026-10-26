@@ -79,5 +79,8 @@ endif()
 option(BCOMP_BUILD_BENCH "Build the benchmarks" OFF)
 if(BCOMP_BUILD_BENCH)
   add_executable(bounded_compositions_unrank_bench bench/unrank_bench.cpp)
+  add_executable(bounded_compositions_sampling_report bench/sampling_report.cpp)
+  target_link_libraries(bounded_compositions_sampling_report
+    PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
   target_link_libraries(bounded_compositions_unrank_bench PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
 endif()
