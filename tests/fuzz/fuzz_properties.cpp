@@ -106,6 +106,21 @@ void check_space(reader& in) {
         } while (s.next(x.data()));
     }
     expect(natural(count) == s.size(), "walk visits size() compositions");
+
+    // A rank sequence, scrambled or not, is a permutation of the ranks.
+    const std::uint64_t seed = in.word();
+    const bounded_compositions::sequence seq = (seed & 1u) != 0
+                                                   ? bounded_compositions::rank_sequence(s, seed)
+                                                   : bounded_compositions::rank_sequence(s);
+    expect(seq.capacity() == count, "rank sequence capacity equals the size");
+    std::vector<std::int32_t> pts(static_cast<std::size_t>(count) * n);
+    seq.points(0, count, pts.data());
+    std::vector<bool> hit(static_cast<std::size_t>(count), false);
+    for (std::uint64_t i = 0; i < count; ++i) {
+        const std::uint64_t r = s.rank(pts.data() + i * n).to_u64();
+        expect(r < count && !hit[r], "rank sequence never repeats a rank");
+        hit[r] = true;
+    }
 }
 
 }  // namespace

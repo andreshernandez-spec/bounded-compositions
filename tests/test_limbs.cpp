@@ -58,3 +58,16 @@ TEST_CASE("divmod by a 32-bit word inverts mul_add_word") {
     CHECK(k::limbs_divmod_u32(a, 3, m) == 123);
     CHECK(k::limbs_cmp(a, 3, before, 3) == 0);
 }
+
+TEST_CASE("power-of-two detection") {
+    const k::limb zero[2] = {0, 0};
+    const k::limb one[1] = {1};
+    const k::limb big[3] = {0, 0, k::limb{1} << 40};
+    const k::limb not_pow[3] = {1, 0, k::limb{1} << 40};
+    const k::limb three[1] = {3};
+    CHECK_FALSE(k::limbs_is_power_of_two(zero, 2));
+    CHECK(k::limbs_is_power_of_two(one, 1));
+    CHECK(k::limbs_is_power_of_two(big, 3));
+    CHECK_FALSE(k::limbs_is_power_of_two(not_pow, 3));
+    CHECK_FALSE(k::limbs_is_power_of_two(three, 1));
+}

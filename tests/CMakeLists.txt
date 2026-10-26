@@ -15,8 +15,10 @@ endif()
 include(Catch)
 
 add_executable(bounded_compositions_tests
+  test_executor.cpp
   test_limbs.cpp
   test_natural.cpp
+  test_sequence.cpp
   test_smoke.cpp
   test_space.cpp)
 target_link_libraries(bounded_compositions_tests
@@ -27,7 +29,9 @@ catch_discover_tests(bounded_compositions_tests)
 # with small tables.
 add_executable(bounded_compositions_limit_tests
   test_limits.cpp
+  ${PROJECT_SOURCE_DIR}/src/executor.cpp
   ${PROJECT_SOURCE_DIR}/src/natural.cpp
+  ${PROJECT_SOURCE_DIR}/src/sequence.cpp
   ${PROJECT_SOURCE_DIR}/src/space.cpp
   ${PROJECT_SOURCE_DIR}/src/version.cpp)
 target_compile_definitions(bounded_compositions_limit_tests PRIVATE
