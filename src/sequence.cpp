@@ -10,6 +10,7 @@
 #include "bounded_compositions/kernel/philox.hpp"
 #include "bounded_compositions/kernel/radical.hpp"
 #include "bounded_compositions/kernel/walk.hpp"
+#include "sobol.hpp"
 
 namespace bounded_compositions {
 
@@ -66,8 +67,13 @@ struct sequence_data {
     k::limb key[2] = {0, 0};
     natural base;  // first rank of the region the sequence covers
     natural span;  // ranks in that region
+    // coordinate: Sobol points decoded in `walk` (the space, or the subspace
+    // below a subtree's prefix), with `prefix` written in front.
+    space walk;
+    std::vector<std::int32_t> prefix;
+    sobol_tables sobol;
 
-    explicit sequence_data(const space& s) : dom(s) {}
+    explicit sequence_data(const space& s) : dom(s), walk(s) {}
 
     // Rank of point i into out[0..rank_limbs). For `rank`, t is the raw index
     // of point i, already found by the caller.
@@ -90,12 +96,36 @@ struct sequence_data {
                     throw std::logic_error("bounded_compositions: uniform draw failed");
                 }
                 break;
+            case sequence_kind::coordinate:
+                // Coordinate points are decoded, not unranked.
+                throw std::logic_error("bounded_compositions: rank_of on a coordinate sequence");
         }
         // Ranks above are within the region; shift them to the space.
         k::limbs_add(out, rank_limbs, base.limbs(), as_int(base.limb_count()), out, rank_limbs);
     }
 
+    void write_coordinate_points(std::uint64_t first, std::uint64_t count,
+                                 std::int32_t* out) const {
+        const k::space_view wv = walk.view();
+        const k::sobol_view sv = sobol.view();
+        const std::size_t n = dom.parts();
+        const std::size_t d = prefix.size();
+        std::vector<k::limb> u(static_cast<std::size_t>(sv.dims) + 1);
+        for (std::uint64_t p = 0; p < count; ++p) {
+            std::int32_t* x = out + p * n;
+            std::copy(prefix.begin(), prefix.end(), x);
+            k::sobol_point(sv, first + p, u.data());
+            if (k::decode(wv, u.data(), x + d) != k::status::ok) {
+                throw std::logic_error("bounded_compositions: decode failed in a sequence");
+            }
+        }
+    }
+
     void write_points(std::uint64_t first, std::uint64_t count, std::int32_t* out) const {
+        if (kind == sequence_kind::coordinate) {
+            write_coordinate_points(first, count, out);
+            return;
+        }
         const k::space_view sv = dom.view();
         const std::size_t n = dom.parts();
         std::vector<k::limb> rank(static_cast<std::size_t>(rank_limbs));
@@ -256,6 +286,11 @@ void sequence::points(std::uint64_t begin, std::uint64_t count, std::int32_t* ou
 
 natural sequence::rank_at(std::uint64_t i) const {
     check_range(i, 1, data_->capacity);
+    if (data_->kind == sequence_kind::coordinate) {
+        std::vector<std::int32_t> x(data_->dom.parts());
+        data_->write_coordinate_points(i, 1, x.data());
+        return data_->dom.rank(x.data());
+    }
     std::vector<k::limb> rank(static_cast<std::size_t>(data_->rank_limbs));
     const std::uint64_t t =
         data_->kind == sequence_kind::rank ? k::radical_raw_index(data_->radical, i) : 0;
@@ -320,6 +355,46 @@ sequence iid_sequence(const space& s, std::uint64_t seed) {
 
 sequence iid_sequence(const space& s, const region& r, std::uint64_t seed) {
     return sequence(make_iid(s, &r, seed));
+}
+
+namespace {
+
+std::shared_ptr<detail::sequence_data> make_coordinate(const space& s, const region* r,
+                                                       bool scramble, std::uint64_t seed) {
+    if (r != nullptr && !r->empty() && !r->is_subtree()) {
+        throw std::invalid_argument(
+            "bounded_compositions::coordinate_sequence: the region must be a subtree");
+    }
+    auto d = base_data(s, r, sequence_kind::coordinate, scramble ? seed : 0);
+    if (d->span.is_zero()) return d;
+    if (r != nullptr && !r->prefix().empty()) {
+        d->prefix = r->prefix();
+        if (d->prefix.size() == s.parts()) {
+            // A single composition: every point is the prefix itself.
+            d->prefix.pop_back();
+        }
+        d->walk = s.subspace(d->prefix);
+    }
+    d->sobol = detail::make_sobol(static_cast<int>(d->walk.parts()) - 1, scramble, seed);
+    return d;
+}
+
+}  // namespace
+
+sequence coordinate_sequence(const space& s) {
+    return sequence(make_coordinate(s, nullptr, false, 0));
+}
+
+sequence coordinate_sequence(const space& s, std::uint64_t scramble_seed) {
+    return sequence(make_coordinate(s, nullptr, true, scramble_seed));
+}
+
+sequence coordinate_sequence(const space& s, const region& subtree) {
+    return sequence(make_coordinate(s, &subtree, false, 0));
+}
+
+sequence coordinate_sequence(const space& s, const region& subtree, std::uint64_t scramble_seed) {
+    return sequence(make_coordinate(s, &subtree, true, scramble_seed));
 }
 
 }  // namespace bounded_compositions

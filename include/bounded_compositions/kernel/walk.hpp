@@ -21,37 +21,76 @@ namespace bounded_compositions {
 namespace kernel {
 
 // Writes the composition of the given rank to out[0..n).
+// Value (shifted, 0-based) of part i when k is left to place and r < N[i][k]
+// (w limbs) is the position among the completions: the v whose cumulative
+// range [cum(v - 1), cum(v)) contains r. If rest is not null, writes
+// r - cum(v - 1), the position inside the chosen value's completions, to
+// rest[0..w).
+BCOMP_KERNEL std::int32_t part_value(const space_view& s, int i, std::int32_t k, const limb* r,
+                                     int w, limb* rest) {
+    const int wn = s.row_limbs[i + 1];
+    limb t[max_limbs];
+    // With T = P[i+1][k] - r > 0, cum(v) > r exactly when P[i+1][k - v - 1] < T,
+    // which holds from some v on, so the binary search needs comparisons only.
+    limbs_sub(table_entry(s, i + 1, k), wn, r, w, t, w);
+    std::int32_t a = 0;
+    std::int32_t b = s.cap[i] < k ? s.cap[i] : k;
+    while (a < b) {
+        const std::int32_t mid = a + (b - a) / 2;
+        const std::int32_t j = k - mid - 1;
+        const bool below = j < 0 || limbs_cmp(table_entry(s, i + 1, j), wn, t, w) < 0;
+        if (below) {
+            b = mid;
+        } else {
+            a = mid + 1;
+        }
+    }
+    // r - cum(a - 1) = P[i+1][k - a] - T.
+    if (rest != nullptr) limbs_sub(table_entry(s, i + 1, k - a), wn, t, w, rest, w);
+    return a;
+}
+
+// Writes the composition of the given rank to out[0..n).
 BCOMP_KERNEL status unrank(const space_view& s, const limb* rank, int rank_limbs,
                            std::int32_t* out) {
     if (s.size_limbs == 0 || limbs_cmp(rank, rank_limbs, s.size, s.size_limbs) >= 0) {
         return status::out_of_range;
     }
     limb r[max_limbs];
-    limb t[max_limbs];
     int w = s.row_limbs[0];
     limbs_copy(rank, rank_limbs, r, w);
     std::int32_t k = s.total;
     for (int i = 0; i + 1 < s.n; ++i) {
-        const int wn = s.row_limbs[i + 1];
-        // r < N[i][k]. With T = P[i+1][k] - r > 0, cum(v) > r exactly when
-        // P[i+1][k - v - 1] < T, and that holds from some v on, so binary
-        // search for the first such v needs comparisons only.
-        limbs_sub(table_entry(s, i + 1, k), wn, r, w, t, w);
-        std::int32_t a = 0;
-        std::int32_t b = s.cap[i] < k ? s.cap[i] : k;
-        while (a < b) {
-            const std::int32_t mid = a + (b - a) / 2;
-            const std::int32_t j = k - mid - 1;
-            const bool below = j < 0 || limbs_cmp(table_entry(s, i + 1, j), wn, t, w) < 0;
-            if (below) {
-                b = mid;
-            } else {
-                a = mid + 1;
-            }
+        const std::int32_t a = part_value(s, i, k, r, w, r);
+        w = s.row_limbs[i + 1];  // the remainder is below N[i+1][k - a]
+        out[i] = a + s.lo[i];
+        k -= a;
+    }
+    out[s.n - 1] = k + s.lo[s.n - 1];
+    return status::ok;
+}
+
+// The unit-cube decoder: part i (i < n - 1) takes the value whose cumulative
+// range of N[i][k] contains floor(u[i] * N[i][k] / 2^64), where u[i] is a
+// 64-bit fraction of the unit interval and k what is left to place; the last
+// part takes the rest. With independent uniform u this is the sequential
+// conditional draw, so compositions come out uniformly (up to 2^-64 rounding
+// per part); a value whose conditional share is below 2^-64 cannot be reached.
+BCOMP_KERNEL status decode(const space_view& s, const limb* u, std::int32_t* out) {
+    if (s.size_limbs == 0) return status::out_of_range;
+    limb count[max_limbs + 1];
+    std::int32_t k = s.total;
+    for (int i = 0; i + 1 < s.n; ++i) {
+        const int w = s.row_limbs[i];
+        // N[i][k] = P[i][k] - P[i][k - 1], times u[i], keeping the top w limbs.
+        const limb* hi = table_entry(s, i, k);
+        if (k > 0) {
+            limbs_sub(hi, w, hi - w, w, count, w);
+        } else {
+            limbs_copy(hi, w, count, w);
         }
-        // New rank inside the chosen part: r - cum(a - 1) = P[i+1][k - a] - T.
-        limbs_sub(table_entry(s, i + 1, k - a), wn, t, w, r, w);
-        w = wn;
+        count[w] = limbs_mul_add_word(count, w, u[i], 0);
+        const std::int32_t a = part_value(s, i, k, count + 1, w, nullptr);
         out[i] = a + s.lo[i];
         k -= a;
     }

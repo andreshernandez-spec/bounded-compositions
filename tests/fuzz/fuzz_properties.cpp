@@ -1,5 +1,6 @@
 // Property fuzzer for natural and space. Built with libFuzzer
 // (BCOMP_FUZZ=ON, Clang) or with fuzz_driver.cpp as a plain test.
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -143,6 +144,33 @@ void check_space(reader& in) {
             ++next;
         }
         expect(next == local.capacity(), "dyadic block has the global points of its ranks");
+    }
+
+    // The unit-cube codec inverts on every composition, and coordinate
+    // sequence points are compositions.
+    if (count == 0) return;
+    std::vector<std::uint64_t> fixed(n);
+    std::vector<double> unit(n);
+    std::vector<std::int32_t> back(n);
+    // A spread of at most 32 compositions keeps each input fast; encode does
+    // a 64-step search per part.
+    const std::uint64_t stride = count > 32 ? count / 32 : 1;
+    for (std::uint64_t i = 0; i < count; i += stride) {
+        const std::int32_t* xi = pts.data() + i * n;
+        bounded_compositions::encode(s, xi, fixed.data());
+        bounded_compositions::decode(s, fixed.data(), back.data());
+        expect(std::equal(back.begin(), back.end(), xi), "decode(encode(x)) == x, 64-bit");
+        bounded_compositions::encode(s, xi, unit.data());  // small spaces: never too narrow
+        bounded_compositions::decode(s, unit.data(), back.data());
+        expect(std::equal(back.begin(), back.end(), xi), "decode(encode(x)) == x, double");
+    }
+    const bounded_compositions::sequence coord =
+        (seed & 2u) != 0 ? bounded_compositions::coordinate_sequence(s, seed)
+                         : bounded_compositions::coordinate_sequence(s);
+    std::vector<std::int32_t> cpts(64 * n);
+    coord.points(seed % 1000, 64, cpts.data());
+    for (std::size_t i = 0; i < 64; ++i) {
+        expect(s.contains(cpts.data() + i * n), "coordinate points are compositions");
     }
 }
 

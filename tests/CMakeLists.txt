@@ -15,6 +15,7 @@ endif()
 include(Catch)
 
 add_executable(bounded_compositions_tests
+  test_coordinate.cpp
   test_executor.cpp
   test_limbs.cpp
   test_natural.cpp
@@ -24,16 +25,21 @@ add_executable(bounded_compositions_tests
   test_space.cpp)
 target_link_libraries(bounded_compositions_tests
   PRIVATE bounded_compositions::bounded_compositions Catch2::Catch2WithMain bounded_compositions_warnings)
+# Tests of private pieces (Sobol tables) include headers from src/.
+target_include_directories(bounded_compositions_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 catch_discover_tests(bounded_compositions_tests)
 
 # The library rebuilt with a two-limb kernel budget, so the limit is testable
 # with small tables.
 add_executable(bounded_compositions_limit_tests
   test_limits.cpp
+  ${PROJECT_SOURCE_DIR}/src/codec.cpp
   ${PROJECT_SOURCE_DIR}/src/executor.cpp
   ${PROJECT_SOURCE_DIR}/src/natural.cpp
   ${PROJECT_SOURCE_DIR}/src/region.cpp
   ${PROJECT_SOURCE_DIR}/src/sequence.cpp
+  ${PROJECT_SOURCE_DIR}/src/sobol.cpp
+  ${PROJECT_SOURCE_DIR}/src/sobol_directions.cpp
   ${PROJECT_SOURCE_DIR}/src/space.cpp
   ${PROJECT_SOURCE_DIR}/src/version.cpp)
 target_compile_definitions(bounded_compositions_limit_tests PRIVATE

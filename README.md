@@ -34,4 +34,6 @@ Meson consumers can use the `bounded-compositions` dependency (`bounded_composit
 
 ## License
 
-BSD-3-Clause.
+BSD-3-Clause. The Sobol direction numbers in `src/sobol_directions.cpp` are
+Joe and Kuo's, under their own BSD-style licence:
+[licenses/sobol-direction-numbers.txt](licenses/sobol-direction-numbers.txt).

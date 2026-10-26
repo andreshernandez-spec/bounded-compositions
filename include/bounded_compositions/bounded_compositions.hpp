@@ -2,6 +2,7 @@
 #ifndef BCOMP_BCOMP_HPP
 #define BCOMP_BCOMP_HPP
 
+#include "bounded_compositions/codec.hpp"
 #include "bounded_compositions/executor.hpp"
 #include "bounded_compositions/natural.hpp"
 #include "bounded_compositions/region.hpp"
