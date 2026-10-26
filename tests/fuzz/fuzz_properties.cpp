@@ -147,6 +147,37 @@ void check_space(reader& in) {
         expect(next == local.capacity(), "dyadic block has the global points of its ranks");
     }
 
+    // Any interval lists its ranks in the order of `seq`, resumes after a
+    // prefix of it, and a fresh_sampler hands out exactly its unvisited ranks.
+    if (count > 0) {
+        std::vector<std::uint64_t> order(static_cast<std::size_t>(count));
+        for (std::uint64_t i = 0; i < count; ++i) order[i] = s.rank(pts.data() + i * n).to_u64();
+        const std::uint64_t a = in.word() % count;
+        const std::uint64_t b = a + 1 + in.word() % (count - a);
+        const bounded_compositions::region r =
+            bounded_compositions::interval(s, natural(a), natural(b));
+        const bounded_compositions::sequence local =
+            (seed & 1u) != 0 ? bounded_compositions::rank_sequence(s, r, seed)
+                             : bounded_compositions::rank_sequence(s, r);
+        const std::uint64_t cut = in.word() % (count + 1);
+        std::uint64_t next = 0, before_cut = 0;
+        for (std::uint64_t i = 0; i < count; ++i) {
+            if (order[i] < a || order[i] >= b) continue;
+            expect(local.rank_at(next) == natural(order[i]), "a region follows the space's order");
+            ++next;
+            if (i < cut) ++before_cut;
+        }
+        expect(next == local.capacity(), "a region's sequence covers it");
+        expect(local.overlap(seq, cut) == before_cut, "overlap counts the outer points inside");
+        bounded_compositions::visited_set seen(s);
+        for (std::uint64_t i = 0; i < cut; ++i) seen.insert(natural(order[i]));
+        bounded_compositions::fresh_sampler fresh(bounded_compositions::rank_sequence(s, r), seen);
+        std::vector<std::int32_t> got(static_cast<std::size_t>(next) * n);
+        const std::uint64_t m = fresh.take(next, got.data());
+        expect(m == next - before_cut, "fresh_sampler hands out every unvisited point");
+        expect(seen.size() == cut + m, "fresh_sampler marks what it hands out");
+    }
+
     // The unit-cube codec inverts on every composition, and coordinate
     // sequence points are compositions.
     if (count == 0) return;

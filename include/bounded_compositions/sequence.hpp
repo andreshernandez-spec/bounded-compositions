@@ -21,12 +21,14 @@ namespace bounded_compositions {
 namespace detail {
 struct sequence_data;
 }
+class fresh_sampler;
 
 enum class sequence_kind {
     // Radical-inverse (one-dimensional Halton, van der Corput) order on the
-    // ranks, skipping indices that fall past the last rank. The first 2^j
-    // points are an even grid over the ranks, each prefix stays spread out,
-    // and no rank repeats: after size() points the whole space is covered.
+    // ranks: ranks sorted by their bit reversal (kernel/radical.hpp). The
+    // first 2^j points are an even grid over the ranks, each prefix stays
+    // spread out, and no rank repeats: after size() points the whole space is
+    // covered. A region lists its ranks in the order of its space.
     rank,
     // floor(phi(i) * size) with phi the base-2 radical inverse of the 64-bit
     // index. Repeats ranks; kept only for comparison with `rank`.
@@ -48,7 +50,8 @@ class sequence {
     sequence_kind kind() const noexcept;
     std::uint64_t seed() const noexcept;
     // Number of points the sequence can produce. For `rank` this is the
-    // space's size, or slightly less than 2^64 for larger spaces.
+    // region's size, or between 2^63 and 2^64 - 1 for regions wider than 64
+    // bits.
     std::uint64_t capacity() const noexcept;
 
     // Writes points [begin, begin + count) to out, parts() values per point,
@@ -68,6 +71,16 @@ class sequence {
     // Throws std::out_of_range if position > capacity().
     void seek(std::uint64_t position);
 
+    // How many of the first n points of outer are points of this sequence.
+    // They are its first points, so seeking past them continues this region
+    // after outer without repeating any. Both must be rank sequences of the
+    // same space and seed, with this sequence's region inside outer's: throws
+    // std::invalid_argument otherwise, and std::out_of_range if
+    // n > outer.capacity().
+    std::uint64_t overlap(const sequence& outer, std::uint64_t n) const;
+    // seek(overlap(outer, outer.position())).
+    void resume_after(const sequence& outer);
+
     friend sequence rank_sequence(const space& s);
     friend sequence rank_sequence(const space& s, std::uint64_t scramble_seed);
     friend sequence rank_sequence(const space& s, const region& r);
@@ -82,7 +95,12 @@ class sequence {
                                         std::uint64_t scramble_seed);
 
   private:
+    friend class fresh_sampler;
+
     explicit sequence(std::shared_ptr<const detail::sequence_data> data);
+    // Reserves up to count points (fewer when fewer remain) with one atomic
+    // step; sets got and returns the index of the first.
+    std::uint64_t reserve(std::uint64_t count, std::uint64_t& got);
 
     std::shared_ptr<const detail::sequence_data> data_;
     std::atomic<std::uint64_t> cursor_{0};
@@ -97,11 +115,13 @@ sequence scaled_rank_sequence(const space& s);
 sequence iid_sequence(const space& s, std::uint64_t seed);
 
 // The same sequences restricted to the ranks of a region of s: points are
-// full compositions of s whose ranks lie in r, and capacity() is r's size (or
-// just under 2^64 for larger regions). Over the blocks of dyadic_split(s, r,
-// j), the unscrambled rank sequences produce the points of rank_sequence(s,
-// r), block by block (see dyadic_split for regions wider than 64 bits).
-// Throws std::out_of_range if r ends past s.size().
+// full compositions of s whose ranks lie in r. A rank sequence over r lists
+// r's ranks in the order of rank_sequence(s) with the same seed, so over any
+// piece of r it gives the points of r's sequence that fall in the piece, in
+// the same order, and overlap() says where a region resumes. For regions
+// wider than 64 bits a sequence holds fewer points than the region: a piece's
+// sequence starts with r's points in it, then continues with ranks r's
+// sequence does not reach. Throws std::out_of_range if r ends past s.size().
 sequence rank_sequence(const space& s, const region& r);
 sequence rank_sequence(const space& s, const region& r, std::uint64_t scramble_seed);
 sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);

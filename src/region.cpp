@@ -155,19 +155,36 @@ std::vector<region> dyadic_split(const space& s, const region& r, int levels) {
         throw std::invalid_argument("bounded_compositions::dyadic_split: levels must be 0..24");
     }
     if (r.empty()) return {};
-    const natural size = r.size();
-    const int m = std::max(1, (size - natural(1)).bit_length());
-    const int used = std::min(levels, m);
+    // rho: bits where the first and last ranks differ, so [a 2^rho, (a+1) 2^rho)
+    // is the smallest aligned block holding r.
+    const natural last = r.end() - natural(1);
+    const std::size_t words = std::max(r.begin().limb_count(), last.limb_count());
+    std::vector<k::limb> diff(words, 0);
+    for (std::size_t i = 0; i < words; ++i) {
+        diff[i] =
+            k::limb_at(r.begin().limbs(), static_cast<int>(r.begin().limb_count()),
+                       static_cast<int>(i)) ^
+            k::limb_at(last.limbs(), static_cast<int>(last.limb_count()), static_cast<int>(i));
+    }
+    const int rho = k::limbs_bit_length(diff.data(), static_cast<int>(words));
+    const int width = rho - std::min(levels, rho);  // blocks of 2^width ranks
+    // The aligned block holding r's first rank: clear its low `width` bits.
+    std::vector<k::limb> start(r.begin().limbs(), r.begin().limbs() + r.begin().limb_count());
+    for (std::size_t i = 0; i < start.size(); ++i) {
+        const int below = width - static_cast<int>(i) * 64;
+        if (below >= 64) {
+            start[i] = 0;
+        } else if (below > 0) {
+            start[i] &= ~((k::limb{1} << below) - 1);
+        }
+    }
     natural block(1);
-    for (int b = 0; b < m - used; ++b) block.mul_small(2);
+    for (int b = 0; b < width; ++b) block.mul_small(2);
     std::vector<region> out;
-    for (std::uint32_t t = 0; t < (std::uint32_t{1} << used); ++t) {
-        natural lo = block;
-        lo.mul_small(t);
-        if (lo >= size) break;
-        natural hi = lo + block;
-        if (hi > size) hi = size;
-        out.push_back(interval(s, r.begin() + lo, r.begin() + hi));
+    for (natural lo = natural::from_limbs(start.data(), start.size()); lo < r.end(); lo += block) {
+        const natural from = std::max(lo, r.begin());
+        const natural to = std::min(lo + block, r.end());
+        out.push_back(interval(s, from, to));
     }
     return out;
 }

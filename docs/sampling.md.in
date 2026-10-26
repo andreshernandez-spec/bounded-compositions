@@ -1,0 +1,378 @@
+# Sampling report
+
+This report documents how the library samples bounded compositions, why each
+method behaves as it does, and how it measures. It closes phase 1: sampling is
+to be understood, validated and signed off before any optimisation is built on
+it.
+
+Measurements were taken on: {{machine}}. Timings depend on the machine and
+vary between sessions on it (they are medians within one session); the spread
+results are deterministic.
+
+## 1. Terms
+
+- A **space** is the set of integer vectors `x` with `x[0] + ... + x[n-1] = K`
+  and `lower[i] <= x[i] <= upper[i]`. Its **size** is the number of such vectors,
+  its **compositions**.
+- The **rank** of a composition is its position in lexicographic order, first
+  part slowest, counting from 0.
+- A **region** is an interval of ranks. A **subtree** is the region of the
+  compositions that share their first parts; it is contiguous in rank order.
+- A **sequence** produces compositions one index at a time. Point `i` depends
+  only on the space, the sequence kind, a seed and `i`, so drawing 1000 points
+  and then 100 more gives exactly the first 1100.
+- The **gap ratio** of N points is the largest gap between consecutive sampled
+  ranks (counting the ends, rank -1 and rank `size`) times N / size. Evenly
+  spaced points give 1. It measures spread in rank order only.
+- The **marginal error** of N points is the largest difference, over every part
+  and every value it can take, between the fraction of points with that value
+  and the exact probability of that value under the uniform distribution. It
+  measures spread part by part.
+
+## 2. Counting and ranking
+
+Let `N[i][k]` be the number of ways to place `k` into parts `i..n-1` within
+their bounds (lower bounds shifted to zero). Then
+
+    N[n][0] = 1,  N[n][k > 0] = 0,
+    N[i][k] = N[i+1][k] + N[i+1][k-1] + ... + N[i+1][k - min(cap_i, k)].
+
+The library stores the prefix sums `P[i][k] = N[i][0] + ... + N[i][k]`, so every
+entry costs one subtraction and one addition: the table is built in O(n K)
+multiprecision operations. The compositions whose part `i` takes value `v`
+(with `k` left to place) number `N[i+1][k - v]`, and those with a smaller part
+`i` number `P[i+1][k] - P[i+1][k - v]`. That makes lexicographic rank a sum of
+one such term per part, and unranking one binary search per part. This is the
+path-counting construction of H. S. Wilf, "A unified setting for sequencing,
+ranking, and selection algorithms for combinatorial objects", Advances in
+Mathematics 24 (1977) 281-291: compositions are the paths of a layered graph,
+and rank is a position among them.
+
+The tests check every rank of random small spaces against plain enumeration,
+sizes against inclusion and exclusion, and multiprecision arithmetic against
+Python's integers. A differential check, not in the repository, agreed with the
+2013-2015 implementation on every rank it compared, on spaces where that code
+is valid.
+
+## 3. The sequences
+
+### 3.1 `rank_sequence`: radical-inverse order on the ranks
+
+This is the one-dimensional Halton (van der Corput) order applied to ranks:
+the method the earlier implementation called Halton.
+
+Let `m = max(1, bitlen(size - 1))`, so `2^(m-1) < size <= 2^m`. Raw index `t`
+gives the m-bit value `X(t) = reverse_m(t)`, optionally XORed with a mask `M`
+for scrambled replicates. Values `X(t) >= size` are skipped, and point `i` is
+the rank of the `i`-th raw index that is kept. Put the other way round, the
+sequence sorts the ranks `x` by their key `reverse_m(x ^ M)`.
+
+**No repeats.** Bit reversal (and XOR with a fixed mask) is a bijection of the
+m-bit values, so each rank appears for exactly one raw index. After `size`
+points the whole space has been visited.
+
+**Grid levels.** The first `2^j` raw indices give exactly the values whose
+low `m - j` bits equal a fixed pattern (zero without a mask): an arithmetic
+progression with step `2^(m-j)` and an offset below the step. The kept points
+among them are the progression's terms below `size`, consecutive terms exactly
+one step apart.
+
+**Gap bound: every prefix of N points has gap ratio below 2.** For N >= 2,
+let `j` be the largest level whose kept count `A_j` is at most N. The first N
+points contain level `j`, whose terms are one step `2^(m-j)` apart, the first
+below one step and the last within one step of `size`, so every gap is at
+most `2^(m-j)`. Level `j + 1` has more than N kept terms, and it has at most
+`ceil(size / 2^(m-j-1))` of them, so `N < 2 size / 2^(m-j)`. Together:
+largest gap `<= 2^(m-j) < 2 size / N`. Measured worst case over all sample
+sizes and spaces here: {{worst_gap_rank}}.
+
+**Where the ratio is close to 1.** At a complete level (N equal to `A_j`) the
+gap ratio is close to 1. At power-of-two sample sizes it is `2^m / size`
+instead, between 1 and 2, because a level's kept count is about
+`size / 2^(m-j)`, not a power of two. Measured against that value:
+
+{{table_rank_pow2}}
+
+Scrambling shifts each level's progression without changing its step, so the
+gaps keep their sizes while the points move. A level's kept count can differ
+by one, so the two gap ratios are not equal by construction; in these
+measurements they were equal at {{rank_same_gap}} of the {{rank_gap_cases}}
+sample sizes.
+
+**Random access.** Point `i` is found directly. The bits of its rank are fixed
+from the lowest up, which are the key's most significant: at each bit, the
+ranks on the side with key bit 0 form an arithmetic progression, so one
+division counts them, and the search moves to the side that holds the `i`-th.
+It stops when one rank is left, after at most 64 steps of 64-bit arithmetic.
+So `seek`, `points(begin, count)` and threads need no shared state.
+
+**Regions.** A region lists its ranks in the space's order: point `i` of a
+region is its rank with the `i`-th smallest key, found by the same count
+restricted to the interval. Three properties follow.
+
+- *The gap bound holds inside every region.* Level `j`'s ranks in a region
+  `[b, e)` are evenly spaced with step `2^(m-j)`, the first within one step of
+  `b` and the last within one step of `e`, so the proof above applies to the
+  region's level counts with `e - b` in place of `size`.
+- *Any split of a region reproduces it.* A piece's sequence gives exactly the
+  region's points in that piece, in the same order. `dyadic_split` cuts along
+  the order's grid, the aligned blocks of `2^w` ranks, which the order visits
+  in turn: blocks wholly inside the region hold equal shares, within one
+  point, of every prefix of the region's sequence.
+- *A region resumes where an outer sequence stopped.* The outer sequence's
+  first N points that fall in the region are the region's first points.
+  `overlap` counts them with a binary search on keys, and `resume_after` skips
+  them, so the region continues without repeats and its new points fill the
+  gaps between the old ones.
+
+For regions wider than 64 bits a sequence holds fewer than `2^64` points:
+with `f = bitlen(size - 1) - 64`, it lists the region's ranks congruent to `M`
+modulo `2^f`, which have the smallest keys, and the same 64-bit search runs on
+`x >> f`. A smaller region inside it starts with those points and continues
+with the ranks between them.
+
+### 3.2 `scaled_rank_sequence`: the earlier mapping
+
+Point `i` is `floor(phi(i) size)`, with `phi` the base-2 radical inverse of the
+64-bit index. The 2013-2015 code used it in two passes: first `2^k + 1`
+evenly spaced ranks, close to this mapping's first `2^k` points, then this
+mapping from index `2^k + 1` on, with the second pass sized from the share of
+first-pass points that were accepted. `rank_sequence` does both passes as one
+sequence: its first `2^j` points are an even grid and later points continue
+it. The scaled mapping is kept for comparison only (section 7).
+
+For `i < 2^j <= size`, the values `phi(i)` are the multiples of `2^-j`, at
+least `size / 2^j >= 1` ranks apart after scaling, so the first
+`2^floor(log2 size)` points never repeat, and at power-of-two sample sizes the
+points are as evenly spaced as integers allow: measured gap ratio at most
+{{scaled_gap_pow2_max}} at power-of-two N from 64 on. Past
+`2^floor(log2 size)` points (at least half the space) it repeats ranks, it
+never visits the whole space, and dyadic blocks do not reproduce it exactly.
+Its worst gap ratio over all measured N is {{worst_gap_scaled_rank}}.
+
+So in rank order, the two mappings differ in which sample sizes are "complete":
+powers of two for the scaled mapping, the level counts `A_j` for
+`rank_sequence`. Both stay below 2 for every N. `rank_sequence` keeps its
+guarantees (no repeats, full coverage, exact region splits) at every N.
+
+### 3.3 `coordinate_sequence`: Sobol points decoded part by part
+
+Point `i` is the `i`-th Sobol point in `n - 1` dimensions (Joe and Kuo's
+direction numbers, the set `scipy.stats.qmc` uses), passed to the unit-cube
+decoder: part `i` takes the value whose share of the completions left after
+parts `0..i-1` contains coordinate `i`, and the last part takes the rest.
+
+Each coordinate of a Sobol sequence (unscrambled, or scrambled by a random
+lower-triangular matrix and a digital shift) puts exactly one of the first
+`2^j` points in each interval `[c / 2^j, (c + 1) / 2^j)`. The first part
+depends on the first coordinate alone, so at every power-of-two N its value
+counts are within two points of their exact expectation. Later parts depend
+on several coordinates through the conditional shares; they keep a large part
+of the advantage over independent draws (section 4) but carry no comparable
+bound.
+
+Distinct coordinates can decode to the same composition, so points can
+repeat. Values whose conditional share is below `2^-64` cannot be reached.
+
+### 3.4 `iid_sequence`: independent uniform draws
+
+Point `i` is a uniform rank drawn by rejection from Philox4x64-10 (the
+generator numpy also implements), keyed by the seed and counter `i`, then
+unranked. Every composition has probability exactly `1 / size`. In the
+logarithmic counting mode, where there are no ranks, it is the sequential
+conditional draw through the decoder, uniform up to about `1e-12` relative
+error.
+
+### 3.5 Not repeating evaluated points
+
+Repeats have three sources: a region sampled again from its start, a
+different order (another seed, or a space with its parts reordered), and
+sequences that repeat by design (coordinate, iid).
+
+- *Same space and seed:* `resume_after` (section 3.1), with no stored state.
+- *Anything else:* a `visited_set` holds the evaluated ranks exactly, one rank
+  per entry, in hash tables split into shards with their own locks so that
+  threads can share it. A `fresh_sampler` draws from a sequence, skips the
+  visited points and marks the ones it hands out. A rank sequence covers its
+  region, so the sampler ends exactly when every point of the region is
+  visited, having passed each visited point once.
+- *Small regions with coordinate or iid sequences:* those repeat and can miss
+  points, so after `patience` visited points in a row (1024 by default) the
+  sampler moves to the region's rank sequence, which lists what is left.
+
+Threads can share one sampler: each takes its points with one atomic step on
+the sequence's position, and the set decides which thread keeps a point.
+
+## 4. Measured spread
+
+Four spaces:
+
+| space | parts | total | bounds | size |
+|---|---:|---:|---|---|
+| small | {{parts_small}} | {{total_small}} | {{bounds_small}} | {{size_small}} |
+| medium | {{parts_medium}} | {{total_medium}} | {{bounds_medium}} | {{size_medium}} |
+| near_cap | {{parts_near_cap}} | {{total_near_cap}} | {{bounds_near_cap}} | {{size_near_cap}} |
+| wide | {{parts_wide}} | {{total_wide}} | {{bounds_wide}} | {{size_wide}} |
+
+Every sequence is measured at {{n_checkpoints}} sample sizes, powers of two and
+others, from one draw of {{max_n}} points per sequence (prefixes of a sequence
+are its smaller samples).
+
+### 4.1 Rank order
+
+![Largest rank gap times N / size against N](sampling/gap_ratio.png)
+
+The rank sequences stay below 2 at every N, as section 3.1 proves; the scaled
+mapping reaches about 1 at powers of two. Coordinate sequences and independent
+draws are not built for rank order and leave much larger gaps (worst measured:
+coordinate {{worst_gap_coordinate_scrambled}}, independent {{worst_gap_iid}}).
+
+### 4.2 Part by part
+
+![Largest marginal error against N, with 1/sqrt(N) for reference](sampling/marginal.png)
+
+The grey line is `1 / sqrt(N)`, the order of independent sampling error. The
+coordinate sequence has the smallest marginal error in most cases. On the
+100-part space at N = {{max_n}}: coordinate {{wide_marg_coord}}, rank
+{{wide_marg_rank}}, independent {{wide_marg_iid}}.
+
+![Largest marginal error of each part, 100-part space, N = {{max_n}}](sampling/by_part.png)
+
+Per part, average of each part's largest error on the 100-part space at
+N = {{max_n}}:
+
+{{table_by_part}}
+
+Rank order beats independent draws clearly only on the leading parts, as
+section 3.1 implies; past them it is close to independent draws. The
+coordinate sequence stays below independent draws on every range of parts,
+but its advantage shrinks along the part order. Two likely reasons, not
+measured separately here: later parts depend on more coordinates through the
+conditional shares, and the joint projections of later Sobol coordinates are
+less uniform than those of the first ones. In both orders, the part order
+given to the space matters.
+
+### 4.3 Repeats
+
+Rank sequences never repeat. On the 6-part space, where {{max_n}} points are
+{{small_size_fraction}} of all compositions, the scrambled coordinate sequence
+gave {{small_distinct_coord}} distinct points and independent draws
+{{small_distinct_iid}}.
+
+### 4.4 Tables
+
+Small space ({{bits_small}}-bit size):
+
+{{table_small}}
+
+Medium space ({{bits_medium}}-bit size):
+
+{{table_medium}}
+
+Near-cap space ({{bits_near_cap}}-bit size):
+
+{{table_near_cap}}
+
+Wide space ({{bits_wide}}-bit size):
+
+{{table_wide}}
+
+### 4.5 Regions after the whole space
+
+Each space's first {{resume_first}} rank-sequence points, then every subtree
+one level down resumed for up to {{resume_per_region}} more points:
+
+{{table_resume}}
+
+The gap ratio is taken inside each subtree over all its points, old and new,
+for the subtrees holding at least two. It stays below 2, as section 3.1
+proves for any prefix of a region's sequence.
+
+A `fresh_sampler` on the subtree with prefix {{fresh_prefix}} of the small space
+({{fresh_size}} compositions), after the space's first {{fresh_first}} points
+were marked visited, {{fresh_inside}} of them inside the subtree:
+
+{{table_fresh}}
+
+## 5. Performance
+
+### 5.1 Threads
+
+Million points of the 100-part space per second, {{throughput_points}} points
+per call, median of {{throughput_runs}} runs:
+
+{{table_threads}}
+
+![Points per second against threads](sampling/threads.png)
+
+One thread produces {{pps_1_rank}} million rank-sequence points per second; 8 threads
+give {{speedup_8_rank}} times that and {{threads_max}} hardware threads
+{{speedup_max_rank}} times. Every point is independent, so threads share
+nothing but the read-only table and an atomic block counter.
+
+### 5.2 Tables and memory
+
+{{table_build}}
+
+The exact table grows as `n K` entries times the limb width of the counts. At
+1000 parts with total 1000 it takes {{mib_exact_1000}} MiB, against
+{{mib_log_1000}} MiB in the logarithmic mode, which stores two doubles per
+entry.
+
+### 5.3 Single operations (100-part space)
+
+{{table_latency}}
+
+Unranking takes {{us_unrank}} microseconds. `encode` is far slower,
+{{us_encode_exact}} microseconds exactly and {{us_encode_log}} in logarithms,
+because it binary-searches each coordinate with a heap allocation per step.
+It is called once per point handed back from an optimiser; an allocation-free
+version is possible if it becomes a bottleneck.
+
+## 6. Limits and caveats
+
+- **Size limit of exact counting:** counts above `BCOMP_MAX_LIMBS` limbs (default
+  64, 4096 bits) are rejected at construction. The logarithmic mode has no
+  size limit, but no ranks, regions or rank sequences.
+- **Logarithmic decoding at cell boundaries:** it matches exact decoding except
+  within about `1e-12` of a cell boundary. Unscrambled Sobol points are exact
+  dyadic fractions and can sit on such a boundary; scrambled coordinate
+  sequences should be used with logarithmic spaces.
+- **Coordinate sequences:** they need `n - 1 <= 21201` dimensions. They can
+  repeat points, and a value whose conditional share is below `2^-64` cannot be
+  reached.
+- **Rank sequences on regions wider than 64 bits:** a sequence holds between
+  `2^63` and `2^64 - 1` points (section 3.1). `fresh_sampler` reports such a
+  region exhausted when its sequence is, not when the region is.
+- **Later parts:** rank order spreads the leading parts finely and the trailing
+  parts no better than independent draws; the coordinate sequence's advantage
+  also shrinks along the part order. The part order given to the space matters.
+- **Repeats across orders:** only rank sequences of the same space and seed
+  resume without stored state. Anything else needs a `visited_set`, which
+  keeps every evaluated rank: 8 bytes per 64 bits of rank, in tables kept at
+  most half full.
+
+## 7. Decisions
+
+1. **Default sequence:** `rank_sequence`, for its coverage, lack of repeats and
+   exact region splits. The scrambled `coordinate_sequence` is the alternative
+   when every part should be spread evenly.
+2. **Sample sizes for rank order:** no helper yet. The level counts `A_j` are
+   needed region by region, so the helper is left to the region search.
+3. **Scaled mapping:** kept for comparison only. It covers the whole space,
+   with no regions or scrambling, and nothing else in the library uses it.
+4. **`encode` speed:** acceptable for now (section 5.3), to be optimised when an
+   optimiser needs it.
+
+## 8. Reproducing
+
+```sh
+cmake --preset release -DBCOMP_BUILD_BENCH=ON
+cmake --build --preset release
+./build/release/bounded_compositions_sampling_report docs/sampling/records.json
+python3 tools/make_sampling_report.py .
+```
+
+The third command writes the records. The last draws the figures and fills
+this report from `docs/sampling.md.in`, refusing any value the records do not
+give.

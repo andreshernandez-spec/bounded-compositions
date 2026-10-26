@@ -4,6 +4,7 @@
 
 #include "bounded_compositions/codec.hpp"
 #include "bounded_compositions/executor.hpp"
+#include "bounded_compositions/fresh.hpp"
 #include "bounded_compositions/natural.hpp"
 #include "bounded_compositions/region.hpp"
 #include "bounded_compositions/sequence.hpp"

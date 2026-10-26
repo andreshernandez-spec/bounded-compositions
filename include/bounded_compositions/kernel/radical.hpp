@@ -1,19 +1,22 @@
-// Base-2 radical-inverse ordering of the ranks [0, L), with no repeats.
+// Base-2 radical-inverse order of the ranks, and its restriction to a region.
 //
-// Let m = max(1, bitlen(L - 1)) and w = min(m, 64). Raw index t (a 64-bit
-// counter below 2^w) gives X(t) = reverse_w(t) ^ mask_hi, and the rank
+// A space of size L has m = max(1, bitlen(L - 1)) rank bits and an m-bit mask
+// M (zero unless scrambled). Its order sorts the ranks x by
 //
-//     r(t) = X(t) * 2^(m - w) + mask_lo,
+//     key(x) = reverse_m(x ^ M).
 //
-// where mask_lo < 2^(m - w) is fixed. Raw indices whose rank is not below L are
-// skipped; point i of the sequence is the i-th raw index that is kept. With no
-// mask and w == m, the first 2^j points are the even grid {c * 2^(m-j)}, and
-// every prefix stays spread out; the mask (an XOR on all m bits) gives an
-// independent replicate with the same structure.
+// The first 2^j keys belong to the ranks congruent to M modulo 2^(m-j), an
+// even grid, and every prefix stays spread out. A region [b, e) lists its
+// ranks in the same order, so sampling a region continues any earlier
+// sampling of the space, or of a region holding it, without repeats.
 //
-// r(t) < L exactly when X(t) < threshold, with threshold = (L >> (m - w)) + 1
-// if mask_lo < L mod 2^(m - w), else L >> (m - w). That threshold can be 2^64,
-// which accept_all stands for.
+// A sequence holds fewer than 2^64 points. For a region of S ranks let
+// f = max(0, bitlen(S - 1) - 64). The ranks congruent to M modulo 2^f have the
+// smallest keys, and there are C <= 2^64 of them in the region; the sequence
+// lists those, written x = x0 + 2^f z with z in [0, C). Their keys order as
+// reverse((v0 + z) ^ M') with v0 = x0 >> f and M' = M >> f, so finding z only
+// takes the low 64 bits of v0 and M'. For f = 0 the sequence is the whole
+// region.
 #ifndef BCOMP_KERNEL_RADICAL_HPP
 #define BCOMP_KERNEL_RADICAL_HPP
 
@@ -26,14 +29,12 @@ namespace bounded_compositions {
 namespace kernel {
 
 struct radical_view {
-    limb threshold;       // keep t when X(t) < threshold (unless accept_all)
-    limb mask_hi;         // XOR on the reversed index, below 2^w
-    const limb* mask_lo;  // low m - w bits of the mask, added to every rank
-    std::int32_t mask_lo_limbs;
-    std::int32_t index_bits;  // w, 1..64
-    std::int32_t shift;       // m - w
-    std::int32_t accept_all;  // threshold == 2^64
-    std::uint64_t capacity;   // number of kept raw indices below 2^w
+    const limb* origin;  // x0
+    std::int32_t origin_limbs;
+    std::int32_t shift;  // f
+    limb origin_high;    // (x0 >> f) mod 2^64
+    limb mask;           // (M >> f) mod 2^64
+    std::uint64_t last;  // C - 1
 };
 
 // Reverses the low w bits of x (1 <= w <= 64).
@@ -47,68 +48,49 @@ BCOMP_KERNEL limb bit_reverse(limb x, int w) {
     return x >> (64 - w);
 }
 
-BCOMP_KERNEL limb radical_x(const radical_view& v, std::uint64_t t) {
-    return bit_reverse(t, v.index_bits) ^ v.mask_hi;
+// Number of z in [0, last] with z = d modulo 2^bits, for d < 2^bits and
+// 1 <= bits <= 64.
+BCOMP_KERNEL std::uint64_t radical_class_size(std::uint64_t last, std::uint64_t d, int bits) {
+    if (d > last) return 0;
+    return bits == 64 ? 1 : ((last - d) >> bits) + 1;
 }
 
-BCOMP_KERNEL bool radical_keeps(const radical_view& v, std::uint64_t t) {
-    return v.accept_all != 0 || radical_x(v, t) < v.threshold;
-}
-
-// Kept raw indices in [0, j), for j < 2^w. Splits [0, j) into aligned blocks
-// [a, a + 2^k): inside one, X runs over an arithmetic progression with step
-// 2^(w-k) and a fixed offset below the step, so its kept count is one division.
-BCOMP_KERNEL std::uint64_t radical_count_below(const radical_view& v, std::uint64_t j) {
-    const int w = v.index_bits;
-    std::uint64_t total = 0;
-    std::uint64_t a = 0;
-    for (int k = w - 1; k >= 0; --k) {
-        if (((j >> k) & 1u) == 0) continue;
-        const std::uint64_t block = std::uint64_t{1} << k;
-        if (v.accept_all != 0) {
-            total += block;
+// The z whose key is the i-th smallest, for i <= last. Fixes the bits of
+// v = v0 + z from the lowest up (the key's most significant first), counting
+// the z left in each class, until one is left.
+BCOMP_KERNEL std::uint64_t radical_select(const radical_view& v, std::uint64_t i) {
+    limb c = 0;                   // low bits of v fixed so far
+    std::uint64_t d = 0;          // z modulo 2^l, from c
+    std::uint64_t left = v.last;  // size of the current class, minus one
+    for (int l = 0; left != 0; ++l) {
+        const limb bit = limb{1} << l;
+        const limb low = l == 63 ? ~limb{0} : (bit << 1) - 1;
+        // Key bit 0 first: v's bit l equal to the mask's.
+        const limb c0 = c | (v.mask & bit);
+        const std::uint64_t d0 = (c0 - v.origin_high) & low;
+        const std::uint64_t n0 = radical_class_size(v.last, d0, l + 1);
+        if (i < n0) {
+            c = c0;
+            d = d0;
+            left = n0 - 1;
         } else {
-            const int s = w - k;  // 1..64
-            const limb low_mask = s == 64 ? ~limb{0} : ((limb{1} << s) - 1);
-            const limb offset = (bit_reverse(a, w) ^ v.mask_hi) & low_mask;
-            if (v.threshold > offset) {
-                // ceil((threshold - offset) / 2^s), capped at the block length
-                const limb span = v.threshold - offset;
-                const limb kept = s == 64 ? 1 : ((span - 1) >> s) + 1;
-                total += kept < block ? kept : block;
-            }
-        }
-        a += block;
-    }
-    return total;
-}
-
-// Raw index of point i, for i < capacity: the smallest t with
-// count_below(t) + keeps(t) == i + 1.
-BCOMP_KERNEL std::uint64_t radical_raw_index(const radical_view& v, std::uint64_t i) {
-    std::uint64_t lo = 0;
-    std::uint64_t hi =
-        v.index_bits == 64 ? ~std::uint64_t{0} : ((std::uint64_t{1} << v.index_bits) - 1);
-    while (lo < hi) {
-        const std::uint64_t mid = lo + (hi - lo) / 2;
-        const std::uint64_t upto = radical_count_below(v, mid) + (radical_keeps(v, mid) ? 1u : 0u);
-        if (upto >= i + 1) {
-            hi = mid;
-        } else {
-            lo = mid + 1;
+            i -= n0;
+            c = c0 ^ bit;
+            d = (c - v.origin_high) & low;
+            left = radical_class_size(v.last, d, l + 1) - 1;
         }
     }
-    return lo;
+    return d;
 }
 
-// rank = X * 2^shift + mask_lo into out[0..out_limbs). X's bits and mask_lo's
-// bits do not overlap, so this is a placement, not an addition.
-BCOMP_KERNEL void radical_rank(const radical_view& v, limb x, limb* out, int out_limbs) {
-    limbs_copy(v.mask_lo, v.mask_lo_limbs, out, out_limbs);
+// rank = x0 + z * 2^f into out[0..out_limbs).
+BCOMP_KERNEL void radical_rank(const radical_view& v, std::uint64_t z, limb* out, int out_limbs) {
+    limbs_zero(out, out_limbs);
     const int word = v.shift / 64;
     const int bit = v.shift % 64;
-    if (word < out_limbs) out[word] |= x << bit;
-    if (bit != 0 && word + 1 < out_limbs) out[word + 1] |= x >> (64 - bit);
+    if (word < out_limbs) out[word] = z << bit;
+    if (bit != 0 && word + 1 < out_limbs) out[word + 1] = z >> (64 - bit);
+    limbs_add(out, out_limbs, v.origin, v.origin_limbs, out, out_limbs);
 }
 
 }  // namespace kernel

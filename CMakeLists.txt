@@ -34,6 +34,7 @@ target_compile_features(bounded_compositions_kernel INTERFACE cxx_std_17)
 add_library(bounded_compositions
   src/codec.cpp
   src/executor.cpp
+  src/fresh.cpp
   src/natural.cpp
   src/region.cpp
   src/sequence.cpp
@@ -79,5 +80,8 @@ endif()
 option(BCOMP_BUILD_BENCH "Build the benchmarks" OFF)
 if(BCOMP_BUILD_BENCH)
   add_executable(bounded_compositions_unrank_bench bench/unrank_bench.cpp)
+  add_executable(bounded_compositions_sampling_report bench/sampling_report.cpp)
+  target_link_libraries(bounded_compositions_sampling_report
+    PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
   target_link_libraries(bounded_compositions_unrank_bench PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
 endif()
