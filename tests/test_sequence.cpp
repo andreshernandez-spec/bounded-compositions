@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <random>
 #include <set>
@@ -112,7 +113,7 @@ TEST_CASE("the first 2^j points of an unscrambled rank_sequence are the even gri
     const bc::sequence seq = bc::rank_sequence(s);
     const std::vector<std::uint64_t> ranks = small_ranks(seq, 1024);
     for (int j = 0; j <= 10; ++j) {
-        std::vector<std::uint64_t> head(ranks.begin(), ranks.begin() + (1 << j));
+        std::vector<std::uint64_t> head(ranks.begin(), ranks.begin() + (std::ptrdiff_t{1} << j));
         std::sort(head.begin(), head.end());
         for (std::uint64_t c = 0; c < head.size(); ++c) CHECK(head[c] == c << (10 - j));
     }
