@@ -64,13 +64,15 @@ struct sequence_data {
     k::radical_view radical{};
     std::vector<k::limb> mask_lo;
     k::limb key[2] = {0, 0};
+    natural base;  // first rank of the region the sequence covers
+    natural span;  // ranks in that region
 
     explicit sequence_data(const space& s) : dom(s) {}
 
     // Rank of point i into out[0..rank_limbs). For `rank`, t is the raw index
     // of point i, already found by the caller.
     void rank_of(std::uint64_t i, std::uint64_t t, k::limb* out) const {
-        const natural& size = dom.size();
+        const natural& size = span;
         switch (kind) {
             case sequence_kind::rank:
                 k::radical_rank(radical, k::radical_x(radical, t), out, rank_limbs);
@@ -89,6 +91,8 @@ struct sequence_data {
                 }
                 break;
         }
+        // Ranks above are within the region; shift them to the space.
+        k::limbs_add(out, rank_limbs, base.limbs(), as_int(base.limb_count()), out, rank_limbs);
     }
 
     void write_points(std::uint64_t first, std::uint64_t count, std::int32_t* out) const {
@@ -114,13 +118,20 @@ struct sequence_data {
 
 namespace {
 
-std::shared_ptr<detail::sequence_data> base_data(const space& s, sequence_kind kind,
-                                                 std::uint64_t seed) {
+// r == nullptr means the whole space.
+std::shared_ptr<detail::sequence_data> base_data(const space& s, const region* r,
+                                                 sequence_kind kind, std::uint64_t seed) {
+    if (r != nullptr && r->end() > s.size()) {
+        throw std::out_of_range("bounded_compositions::sequence: region ends at rank " +
+                                r->end().to_string() + ", past the size " + s.size().to_string());
+    }
     auto d = std::make_shared<detail::sequence_data>(s);
     d->kind = kind;
     d->seed = seed;
     d->rank_limbs = std::max<int>(1, as_int(s.size().limb_count()));
-    if (s.empty()) {
+    d->base = r != nullptr ? r->begin() : natural();
+    d->span = r != nullptr ? r->size() : s.size();
+    if (d->span.is_zero()) {
         d->capacity = 0;
     } else if (kind == sequence_kind::rank) {
         d->capacity = 0;  // set by set_radical
@@ -132,7 +143,7 @@ std::shared_ptr<detail::sequence_data> base_data(const space& s, sequence_kind k
 
 // Fills the radical view for ranks [0, size) with the given m-bit mask.
 void set_radical(detail::sequence_data& d, const std::vector<k::limb>& mask) {
-    const natural& size = d.dom.size();
+    const natural& size = d.span;
     if (size.is_zero()) return;
     const natural last = size - natural(1);
     const int m = std::max(1, last.bit_length());
@@ -261,33 +272,54 @@ std::uint64_t sequence::take(std::uint64_t count, std::int32_t* out, executor* e
     return begin;
 }
 
-sequence rank_sequence(const space& s) {
-    auto d = base_data(s, sequence_kind::rank, 0);
-    if (!s.empty()) {
-        const int m = std::max(1, (s.size() - natural(1)).bit_length());
-        set_radical(*d, std::vector<k::limb>(static_cast<std::size_t>((m + 63) / 64), 0));
+namespace {
+
+std::shared_ptr<detail::sequence_data> make_rank(const space& s, const region* r, bool scramble,
+                                                 std::uint64_t seed) {
+    auto d = base_data(s, r, sequence_kind::rank, scramble ? seed : 0);
+    if (!d->span.is_zero()) {
+        const int m = std::max(1, (d->span - natural(1)).bit_length());
+        set_radical(*d, scramble
+                            ? mask_bits(seed, m)
+                            : std::vector<k::limb>(static_cast<std::size_t>((m + 63) / 64), 0));
     }
-    return sequence(std::move(d));
+    return d;
 }
 
+std::shared_ptr<detail::sequence_data> make_iid(const space& s, const region* r,
+                                                std::uint64_t seed) {
+    auto d = base_data(s, r, sequence_kind::iid, seed);
+    d->key[0] = seed;
+    d->key[1] = tag_iid;
+    return d;
+}
+
+}  // namespace
+
+sequence rank_sequence(const space& s) { return sequence(make_rank(s, nullptr, false, 0)); }
+
 sequence rank_sequence(const space& s, std::uint64_t scramble_seed) {
-    auto d = base_data(s, sequence_kind::rank, scramble_seed);
-    if (!s.empty()) {
-        const int m = std::max(1, (s.size() - natural(1)).bit_length());
-        set_radical(*d, mask_bits(scramble_seed, m));
-    }
-    return sequence(std::move(d));
+    return sequence(make_rank(s, nullptr, true, scramble_seed));
+}
+
+sequence rank_sequence(const space& s, const region& r) {
+    return sequence(make_rank(s, &r, false, 0));
+}
+
+sequence rank_sequence(const space& s, const region& r, std::uint64_t scramble_seed) {
+    return sequence(make_rank(s, &r, true, scramble_seed));
 }
 
 sequence scaled_rank_sequence(const space& s) {
-    return sequence(base_data(s, sequence_kind::scaled_rank, 0));
+    return sequence(base_data(s, nullptr, sequence_kind::scaled_rank, 0));
 }
 
 sequence iid_sequence(const space& s, std::uint64_t seed) {
-    auto d = base_data(s, sequence_kind::iid, seed);
-    d->key[0] = seed;
-    d->key[1] = tag_iid;
-    return sequence(std::move(d));
+    return sequence(make_iid(s, nullptr, seed));
+}
+
+sequence iid_sequence(const space& s, const region& r, std::uint64_t seed) {
+    return sequence(make_iid(s, &r, seed));
 }
 
 }  // namespace bounded_compositions

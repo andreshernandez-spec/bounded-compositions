@@ -13,6 +13,7 @@
 
 #include "bounded_compositions/executor.hpp"
 #include "bounded_compositions/natural.hpp"
+#include "bounded_compositions/region.hpp"
 #include "bounded_compositions/space.hpp"
 
 namespace bounded_compositions {
@@ -65,8 +66,11 @@ class sequence {
 
     friend sequence rank_sequence(const space& s);
     friend sequence rank_sequence(const space& s, std::uint64_t scramble_seed);
+    friend sequence rank_sequence(const space& s, const region& r);
+    friend sequence rank_sequence(const space& s, const region& r, std::uint64_t scramble_seed);
     friend sequence scaled_rank_sequence(const space& s);
     friend sequence iid_sequence(const space& s, std::uint64_t seed);
+    friend sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
 
   private:
     explicit sequence(std::shared_ptr<const detail::sequence_data> data);
@@ -82,6 +86,16 @@ sequence rank_sequence(const space& s);
 sequence rank_sequence(const space& s, std::uint64_t scramble_seed);
 sequence scaled_rank_sequence(const space& s);
 sequence iid_sequence(const space& s, std::uint64_t seed);
+
+// The same sequences restricted to the ranks of a region of s: points are
+// full compositions of s whose ranks lie in r, and capacity() is r's size (or
+// just under 2^64 for larger regions). Over the blocks of dyadic_split(s, r,
+// j), the unscrambled rank sequences produce the points of rank_sequence(s,
+// r), block by block (see dyadic_split for regions wider than 64 bits).
+// Throws std::out_of_range if r ends past s.size().
+sequence rank_sequence(const space& s, const region& r);
+sequence rank_sequence(const space& s, const region& r, std::uint64_t scramble_seed);
+sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
 
 }  // namespace bounded_compositions
 

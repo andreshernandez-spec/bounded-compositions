@@ -59,12 +59,22 @@ class space {
     // if x is the last one. x must be in the space.
     bool next(std::int32_t* x) const noexcept;
 
+    // The compositions of the remaining parts once the first prefix.size()
+    // parts are fixed to prefix: a space of parts() - prefix.size() parts that
+    // shares this space's table. Its rank r is rank begin + r here, where
+    // begin is the first rank of subtree(*this, prefix). Throws
+    // std::invalid_argument if the prefix leaves no part, breaks a bound, or
+    // has no completion.
+    space subspace(const std::vector<std::int32_t>& prefix) const;
+
     // Kernel view of this space. Valid while this space or a copy of it lives.
     kernel::space_view view() const noexcept;
-    // Memory held by the counting table.
+    // Memory held by the counting table (shared with subspaces).
     std::size_t table_bytes() const noexcept;
 
   private:
+    explicit space(std::shared_ptr<const detail::space_data> data);
+
     std::shared_ptr<const detail::space_data> data_;
 };
 

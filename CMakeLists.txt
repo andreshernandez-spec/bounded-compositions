@@ -34,6 +34,7 @@ target_compile_features(bounded_compositions_kernel INTERFACE cxx_std_17)
 add_library(bounded_compositions
   src/executor.cpp
   src/natural.cpp
+  src/region.cpp
   src/sequence.cpp
   src/space.cpp
   src/version.cpp)

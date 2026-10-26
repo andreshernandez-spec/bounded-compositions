@@ -121,6 +121,29 @@ void check_space(reader& in) {
         expect(r < count && !hit[r], "rank sequence never repeats a rank");
         hit[r] = true;
     }
+
+    // Children tile the whole space, and every dyadic block's own sequence
+    // is the global sequence restricted to that block.
+    const bounded_compositions::region all = bounded_compositions::whole(s);
+    natural at;
+    for (const auto& kid : bounded_compositions::children(s, all)) {
+        expect(kid.begin() == at && !kid.empty(), "children are contiguous and non-empty");
+        at = kid.end();
+    }
+    expect(at == all.end() || count == 1, "children cover the whole space");
+    const bounded_compositions::sequence global = bounded_compositions::rank_sequence(s, all);
+    const int levels = static_cast<int>(in.byte() % 5);
+    for (const auto& block : bounded_compositions::dyadic_split(s, all, levels)) {
+        const bounded_compositions::sequence local = bounded_compositions::rank_sequence(s, block);
+        std::uint64_t next = 0;
+        for (std::uint64_t i = 0; i < count; ++i) {
+            const natural r = global.rank_at(i);
+            if (!block.contains(r)) continue;
+            expect(local.rank_at(next) == r, "dyadic block reproduces the global order");
+            ++next;
+        }
+        expect(next == local.capacity(), "dyadic block has the global points of its ranks");
+    }
 }
 
 }  // namespace

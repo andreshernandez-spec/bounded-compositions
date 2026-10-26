@@ -27,6 +27,8 @@ struct space_data {
     std::vector<k::limb> table;
     natural size;
     k::space_view view{};
+    // A subspace points into its parent's arrays and keeps the parent alive.
+    std::shared_ptr<const space_data> parent;
 };
 
 }  // namespace detail
@@ -220,7 +222,65 @@ const natural& space::size() const noexcept { return data_->size; }
 bool space::empty() const noexcept { return data_->size.is_zero(); }
 k::space_view space::view() const noexcept { return data_->view; }
 
-std::size_t space::table_bytes() const noexcept { return data_->table.size() * sizeof(k::limb); }
+std::size_t space::table_bytes() const noexcept {
+    const detail::space_data* d = data_.get();
+    while (d->parent) d = d->parent.get();
+    return d->table.size() * sizeof(k::limb);
+}
+
+space::space(std::shared_ptr<const detail::space_data> data) : data_(std::move(data)) {}
+
+space space::subspace(const std::vector<std::int32_t>& prefix) const {
+    const std::size_t n = parts();
+    const std::size_t d = prefix.size();
+    if (d >= n) {
+        throw std::invalid_argument(
+            "bounded_compositions::space::subspace: prefix must leave at least one part");
+    }
+    if (empty()) throw std::invalid_argument("bounded_compositions::space::subspace: empty space");
+    const k::space_view& v = data_->view;
+    std::int32_t left = v.total;
+    std::int64_t prefix_sum = 0;
+    for (std::size_t i = 0; i < d; ++i) {
+        const std::int64_t y = static_cast<std::int64_t>(prefix[i]) - v.lo[i];
+        if (y < 0 || y > v.cap[i] || y > left) {
+            throw std::invalid_argument("bounded_compositions::space::subspace: prefix value " +
+                                        std::to_string(prefix[i]) + " at part " +
+                                        std::to_string(i) + " is out of range");
+        }
+        left -= static_cast<std::int32_t>(y);
+        prefix_sum += prefix[i];
+    }
+    // size = N[d][left] = P[d][left] - P[d][left - 1]
+    const int row = static_cast<int>(d);
+    const int w = v.row_limbs[row];
+    const k::limb* hi = k::table_entry(v, row, left);
+    natural size = natural::from_limbs(hi, static_cast<std::size_t>(w));
+    if (left > 0) size -= natural::from_limbs(hi - w, static_cast<std::size_t>(w));
+    if (size.is_zero()) {
+        throw std::invalid_argument(
+            "bounded_compositions::space::subspace: prefix has no completion");
+    }
+
+    auto sub = std::make_shared<detail::space_data>();
+    sub->parent = data_;
+    sub->total = static_cast<std::int32_t>(data_->total - prefix_sum);
+    sub->lower.assign(data_->lower.begin() + static_cast<std::ptrdiff_t>(d), data_->lower.end());
+    sub->upper.assign(data_->upper.begin() + static_cast<std::ptrdiff_t>(d), data_->upper.end());
+    sub->size = std::move(size);
+    k::space_view& sv = sub->view;
+    sv = v;  // same table; rows and parts shifted by d
+    sv.row_offset = v.row_offset + d;
+    sv.row_limbs = v.row_limbs + d;
+    sv.lo = v.lo + d;
+    sv.cap = v.cap + d;
+    sv.cap_suffix = v.cap_suffix + d;
+    sv.size = sub->size.limbs();
+    sv.size_limbs = static_cast<std::int32_t>(sub->size.limb_count());
+    sv.n = static_cast<std::int32_t>(n - d);
+    sv.total = left;
+    return space(std::move(sub));
+}
 
 void space::unrank(const natural& r, std::int32_t* out) const {
     const k::status st = k::unrank(data_->view, r.limbs(), as_int(r.limb_count()), out);
