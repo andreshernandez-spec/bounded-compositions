@@ -1,10 +1,10 @@
 // Rank, unrank and lexicographic enumeration over a space_view.
 //
 // Order is lexicographic in (x[0], ..., x[n-1]), first part slowest. With the
-// shifted values y[i] = x[i] - lo[i], the compositions whose part i takes
-// value v (given k left to place and layer c) number N[i+1][k - v][c'], with
-// c' = c + the step of v's segment, so the ones with a smaller part i inside
-// a segment [a, b] number
+// shifted values y[i] = x[i] - lo[i], part i in state (k, c) moves to
+// (k - v, c') for value v, and every value of a segment allowed by the limits
+// leads to the same layer c' (views.hpp, move below). So the compositions
+// with a smaller part i inside a segment [a, b] number
 //
 //   sum_{a <= u < v} N[i+1][k - u][c'] = P[i+1][c'][k - a] - P[i+1][c'][k - v],
 //
@@ -23,8 +23,8 @@
 namespace bounded_compositions {
 namespace kernel {
 
-// Segment g of part i: allowed shifted values first..last, moving the layer
-// by step (views.hpp).
+// Segment g of part i: allowed shifted values first..last, moving the support
+// count by step (views.hpp).
 BCOMP_KERNEL std::int32_t seg_first(const space_view& s, int i, int g) {
     return s.seg[9 * i + 3 * g];
 }
@@ -35,21 +35,64 @@ BCOMP_KERNEL std::int32_t seg_step(const space_view& s, int i, int g) {
     return s.seg[9 * i + 3 * g + 2];
 }
 
-// The step of the segment holding shifted value y of part i, or -1 if no
-// segment holds it.
-BCOMP_KERNEL std::int32_t step_of(const space_view& s, int i, std::int32_t y) {
+// The values of segment g of part i that the limits allow from state
+// (k, layer), as [*first, *last], and the layer of row i + 1 they all lead
+// to. Returns false if there are none.
+BCOMP_KERNEL bool move(const space_view& s, int i, int g, std::int32_t k, std::int32_t layer,
+                       std::int32_t* first, std::int32_t* last, std::int32_t* next) {
+    std::int32_t a = seg_first(s, i, g);
+    std::int32_t b = seg_last(s, i, g) < k ? seg_last(s, i, g) : k;
+    const std::int32_t count =
+        (s.support_layers == 1 ? 0 : layer % s.support_layers) + seg_step(s, i, g);
+    if (count >= s.support_layers) return false;
+    std::int32_t to = count;
+    for (int e = s.act_start[i]; e < s.act_start[i + 1]; ++e) {
+        const std::int32_t* q = s.act + 4 * e;
+        const std::int32_t grp = q[0];
+        const std::int32_t flags = q[1];
+        std::int32_t r = 0;  // the group's shifted sum before part i
+        if ((flags & 2) == 0) {
+            const std::int32_t* o = s.row_open + 4 * (s.row_open_start[i] + q[2]);
+            const std::int32_t coord = (layer / o[3]) % o[2];
+            r = o[1] != 0 ? coord - k : coord;
+        }
+        if (r < 0 || r > s.grp_hi[grp]) return false;  // a state no composition reaches
+        if ((flags & 1) != 0) {
+            if (b > s.grp_hi[grp] - r) b = s.grp_hi[grp] - r;
+            if ((flags & 4) != 0 && a < s.grp_lo[grp] - r) a = s.grp_lo[grp] - r;
+        }
+        if ((flags & 4) == 0) {
+            // After part i: r + v + (k - v) = r + k for a member, r otherwise.
+            const std::int32_t* o = s.row_open + 4 * (s.row_open_start[i + 1] + q[3]);
+            const std::int32_t coord = (flags & 1) != 0 ? r + k : r;
+            if (coord >= o[2]) return false;
+            to += coord * o[3];
+        }
+    }
+    if (a > b) return false;
+    *first = a;
+    *last = b;
+    *next = to;
+    return true;
+}
+
+// The layer after part i takes shifted value y from state (k, layer), or -1
+// if y is not allowed there.
+BCOMP_KERNEL std::int32_t layer_after(const space_view& s, int i, std::int32_t k,
+                                      std::int32_t layer, std::int32_t y) {
     for (int g = 0; g < s.segs[i]; ++g) {
-        if (y >= seg_first(s, i, g) && y <= seg_last(s, i, g)) return seg_step(s, i, g);
+        if (y < seg_first(s, i, g) || y > seg_last(s, i, g)) continue;
+        std::int32_t a = 0, b = 0, next = 0;
+        if (!move(s, i, g, k, layer, &a, &b, &next) || y < a || y > b) return -1;
+        return next;
     }
     return -1;
 }
 
 // N[row][layer][k] > 0, in either counting mode.
 BCOMP_KERNEL bool has_completion(const space_view& s, int row, std::int32_t layer, std::int32_t k) {
-    if (k < 0 || layer < 0 || layer >= s.layers) return false;
-    if (s.log_mode != 0) {
-        return s.positive[(static_cast<std::int64_t>(row) * s.layers + layer) * s.table_k + k] != 0;
-    }
+    if (k < 0 || layer < 0 || layer >= s.row_layers[row]) return false;
+    if (s.log_mode != 0) return s.positive[(s.row_layer_start[row] + layer) * s.table_k + k] != 0;
     const int w = s.row_limbs[row];
     const limb* p = table_entry(s, row, layer, k);
     return k == 0 ? !limbs_is_zero(p, w) : limbs_cmp(p, w, p - w, w) != 0;
@@ -59,7 +102,7 @@ BCOMP_KERNEL bool has_completion(const space_view& s, int row, std::int32_t laye
 BCOMP_KERNEL void completions(const space_view& s, int row, std::int32_t layer, std::int32_t k,
                               limb* out) {
     const int w = s.row_limbs[row];
-    if (k < 0 || layer < 0 || layer >= s.layers) {
+    if (k < 0 || layer < 0 || layer >= s.row_layers[row]) {
         limbs_zero(out, w);
         return;
     }
@@ -71,9 +114,9 @@ BCOMP_KERNEL void completions(const space_view& s, int row, std::int32_t layer, 
     }
 }
 
-// Inside segment [a, b] of part i, moving to layer cn: the smallest v with
-// P[i+1][cn][k - v - 1] < t (true at v = b), where t = P[i+1][cn][k - a] minus
-// the position inside the segment. Writes the position inside v's
+// Inside segment values [a, b] of part i, moving to layer cn: the smallest v
+// with P[i+1][cn][k - v - 1] < t (true at v = b), where t = P[i+1][cn][k - a]
+// minus the position inside the segment. Writes the position inside v's
 // completions, P[i+1][cn][k - v] - t, to rest if it is not null.
 BCOMP_KERNEL std::int32_t search_segment(const space_view& s, int i, std::int32_t k,
                                          std::int32_t cn, std::int32_t a, std::int32_t b,
@@ -92,26 +135,24 @@ BCOMP_KERNEL std::int32_t search_segment(const space_view& s, int i, std::int32_
     return a;
 }
 
-// The shifted value of part i, in layer c with k left to place, whose
-// completions hold position r < N[i][k][c] (w limbs), values counted in
-// increasing order. Writes the next layer to *layer and, if rest is not null,
-// r minus the completions of the smaller values to rest[0..row_limbs[i + 1]).
-// Inside a segment, value v's completions are N[i+1][k - v][cn], so the ones
-// of the segment's values below v sum to P[i+1][cn][k - a] - P[i+1][cn][k - v]:
-// with T = P[k - a] - r, v holds r exactly when P[k - v - 1] < T <= P[k - v],
-// and the search needs comparisons only. Returns -1 if r is too large.
+// The shifted value of part i, in state (k, c), whose completions hold
+// position r < N[i][k][c] (w limbs), values counted in increasing order.
+// Writes the next layer to *layer and, if rest is not null, r minus the
+// completions of the smaller values to rest[0..row_limbs[i + 1]). Inside a
+// segment, value v's completions are N[i+1][k - v][cn], so the ones of the
+// segment's values below v sum to P[i+1][cn][k - a] - P[i+1][cn][k - v]: with
+// T = P[k - a] - r, v holds r exactly when P[k - v - 1] < T <= P[k - v], and
+// the search needs comparisons only. Returns -1 if r is too large.
 BCOMP_KERNEL std::int32_t part_value(const space_view& s, int i, std::int32_t k, std::int32_t c,
                                      const limb* r, int w, limb* rest, std::int32_t* layer) {
     const int wn = s.row_limbs[i + 1];
     const int wt = w > wn ? w : wn;
     limb t[max_limbs];
+    std::int32_t a = 0, b = 0, cn = 0;
+    *layer = -1;
     if (s.segs[i] == 1) {
         // The only segment holds every r below N[i][k][c].
-        const std::int32_t a = seg_first(s, i, 0);
-        const std::int32_t b = seg_last(s, i, 0) < k ? seg_last(s, i, 0) : k;
-        const std::int32_t cn = c + seg_step(s, i, 0);
-        *layer = -1;
-        if (a > b || cn >= s.layers) return -1;
+        if (!move(s, i, 0, k, c, &a, &b, &cn)) return -1;
         limbs_sub(table_entry(s, i + 1, cn, k - a), wn, r, w, t, wt);
         *layer = cn;
         return search_segment(s, i, k, cn, a, b, t, wt, rest);
@@ -119,10 +160,7 @@ BCOMP_KERNEL std::int32_t part_value(const space_view& s, int i, std::int32_t k,
     limb left[max_limbs];  // r minus the completions of the segments passed
     limbs_copy(r, w, left, wt);
     for (int g = 0; g < s.segs[i]; ++g) {
-        const std::int32_t a = seg_first(s, i, g);
-        const std::int32_t b = seg_last(s, i, g) < k ? seg_last(s, i, g) : k;
-        const std::int32_t cn = c + seg_step(s, i, g);
-        if (a > b || cn >= s.layers) continue;
+        if (!move(s, i, g, k, c, &a, &b, &cn)) continue;
         const limb* top = table_entry(s, i + 1, cn, k - a);
         const limb* bottom = k - b - 1 >= 0 ? table_entry(s, i + 1, cn, k - b - 1) : nullptr;
         bool inside = false;
@@ -139,7 +177,6 @@ BCOMP_KERNEL std::int32_t part_value(const space_view& s, int i, std::int32_t k,
         *layer = cn;
         return search_segment(s, i, k, cn, a, b, t, wt, rest);
     }
-    *layer = -1;
     return -1;
 }
 
@@ -194,35 +231,34 @@ BCOMP_KERNEL status decode(const space_view& s, const limb* u, std::int32_t* out
 }
 
 // True if x[0..n) lies within the bounds and segments, sums to the total and
-// has an allowed number of nonzero parts.
+// keeps the support and group limits.
 BCOMP_KERNEL bool contains(const space_view& s, const std::int32_t* x) {
     if (s.feasible == 0) return false;
-    std::int64_t sum = 0;
-    std::int32_t nonzero = s.layer_base;
+    std::int32_t k = s.total;
+    std::int32_t c = s.layer_base;
     for (int i = 0; i < s.n; ++i) {
         const std::int64_t y = static_cast<std::int64_t>(x[i]) - s.lo[i];
-        if (y < 0 || y > s.cap[i]) return false;
-        if (step_of(s, i, static_cast<std::int32_t>(y)) < 0) return false;
-        if (x[i] != 0) ++nonzero;
-        sum += y;
+        if (y < 0 || y > s.cap[i] || y > k) return false;
+        c = layer_after(s, i, k, c, static_cast<std::int32_t>(y));
+        if (c < 0) return false;
+        k -= static_cast<std::int32_t>(y);
     }
-    return sum == s.total && nonzero >= s.count_min && nonzero <= s.count_max;
+    // Row n holds the support count alone.
+    return k == 0 && c >= s.count_min && c <= s.count_max;
 }
 
 // Adds to out[0..out_limbs) the completions of part i's allowed values below y,
-// in layer c with k left to place.
+// from state (k, c).
 BCOMP_KERNEL void add_below(const space_view& s, int i, std::int32_t k, std::int32_t c,
                             std::int32_t y, limb* out, int out_limbs) {
     const int wn = s.row_limbs[i + 1];
     limb t[max_limbs];
     for (int g = 0; g < s.segs[i]; ++g) {
-        const std::int32_t a = seg_first(s, i, g);
-        if (a >= y) break;
-        std::int32_t b = seg_last(s, i, g);
+        if (seg_first(s, i, g) >= y) break;
+        std::int32_t a = 0, b = 0, cn = 0;
+        if (!move(s, i, g, k, c, &a, &b, &cn)) continue;
         if (b > y - 1) b = y - 1;
-        if (b > k) b = k;
-        const std::int32_t cn = c + seg_step(s, i, g);
-        if (a > b || cn >= s.layers) continue;
+        if (a > b) continue;
         const limb* top = table_entry(s, i + 1, cn, k - a);
         if (k - b - 1 >= 0) {
             limbs_sub(top, wn, table_entry(s, i + 1, cn, k - b - 1), wn, t, wn);
@@ -244,14 +280,14 @@ BCOMP_KERNEL status rank(const space_view& s, const std::int32_t* x, limb* out, 
     for (int i = 0; i + 1 < s.n; ++i) {
         const std::int32_t y = x[i] - s.lo[i];
         add_below(s, i, k, c, y, out, out_limbs);
-        c += step_of(s, i, y);
+        c = layer_after(s, i, k, c, y);
         k -= y;
     }
     return status::ok;
 }
 
-// Fills out[i..n) with the smallest completion that places k into parts
-// i..n-1 from layer c. Requires one to exist.
+// Fills out[i..n) with the smallest completion of parts i..n-1 from state
+// (k, c). Requires one to exist.
 BCOMP_KERNEL void fill_smallest(const space_view& s, int i, std::int32_t k, std::int32_t c,
                                 std::int32_t* out) {
     if (s.plain != 0) {
@@ -266,8 +302,9 @@ BCOMP_KERNEL void fill_smallest(const space_view& s, int i, std::int32_t k, std:
     for (int j = i; j + 1 < s.n; ++j) {
         bool placed = false;
         for (int g = 0; g < s.segs[j] && !placed; ++g) {
-            const std::int32_t cn = c + seg_step(s, j, g);
-            for (std::int32_t v = seg_first(s, j, g); v <= seg_last(s, j, g) && v <= k; ++v) {
+            std::int32_t a = 0, b = 0, cn = 0;
+            if (!move(s, j, g, k, c, &a, &b, &cn)) continue;
+            for (std::int32_t v = a; v <= b; ++v) {
                 if (has_completion(s, j + 1, cn, k - v)) {
                     out[j] = v + s.lo[j];
                     k -= v;
@@ -289,8 +326,9 @@ BCOMP_KERNEL status first(const space_view& s, std::int32_t* out) {
 }
 
 // Replaces x by its lexicographic successor. Returns out_of_range, leaving x
-// unchanged, if x is the last composition. x must be in the space.
-BCOMP_KERNEL status next(const space_view& s, std::int32_t* x) {
+// unchanged, if x is the last composition. x must be in the space. scratch
+// holds n values; it may be null for a plain space.
+BCOMP_KERNEL status next(const space_view& s, std::int32_t* x, std::int32_t* scratch) {
     if (s.feasible == 0) return status::out_of_range;
     if (s.plain != 0) {
         std::int32_t suffix = x[s.n - 1] - s.lo[s.n - 1];
@@ -307,21 +345,26 @@ BCOMP_KERNEL status next(const space_view& s, std::int32_t* x) {
         }
         return status::out_of_range;
     }
-    // The layer after every part, then back from the right: before part i
-    // the layer is c and parts i..n-1 hold `suffix`.
+    // The layer before every part, then back from the right: before part i
+    // parts i..n-1 hold `suffix`.
+    std::int32_t k = s.total;
     std::int32_t c = s.layer_base;
-    for (int i = 0; i < s.n; ++i) c += step_of(s, i, x[i] - s.lo[i]);
+    for (int i = 0; i < s.n; ++i) {
+        scratch[i] = c;
+        const std::int32_t y = x[i] - s.lo[i];
+        c = layer_after(s, i, k, c, y);
+        k -= y;
+    }
     std::int32_t suffix = 0;
     for (int i = s.n - 1; i >= 0; --i) {
         const std::int32_t y = x[i] - s.lo[i];
         suffix += y;
-        c -= step_of(s, i, y);
         if (i == s.n - 1) continue;
         // The smallest allowed value above y that leaves a completion.
         for (int g = 0; g < s.segs[i]; ++g) {
-            const std::int32_t cn = c + seg_step(s, i, g);
-            const std::int32_t from = seg_first(s, i, g) > y ? seg_first(s, i, g) : y + 1;
-            for (std::int32_t v = from; v <= seg_last(s, i, g) && v <= suffix; ++v) {
+            std::int32_t a = 0, b = 0, cn = 0;
+            if (!move(s, i, g, suffix, scratch[i], &a, &b, &cn)) continue;
+            for (std::int32_t v = a > y ? a : y + 1; v <= b; ++v) {
                 if (has_completion(s, i + 1, cn, suffix - v)) {
                     x[i] = v + s.lo[i];
                     fill_smallest(s, i + 1, suffix - v, cn, x);
@@ -356,22 +399,21 @@ BCOMP_KERNEL double unit_fraction(limb u) {
     return x < 1.0 ? x : 0x1.fffffffffffffp-1;
 }
 
-// log of the completions of segment g of part i, in layer c with k left: the
-// window [k - b, k - a] of row i + 1 in the segment's layer.
+// log of the completions of segment g of part i from state (k, c): the window
+// [k - b, k - a] of row i + 1 in the layer the segment leads to.
 BCOMP_KERNEL double log_segment(const space_view& s, int i, int g, std::int32_t k, std::int32_t c) {
-    const std::int32_t a = seg_first(s, i, g);
-    const std::int32_t b = seg_last(s, i, g) < k ? seg_last(s, i, g) : k;
-    const std::int32_t cn = c + seg_step(s, i, g);
-    if (a > b || cn >= s.layers) return log_zero;
+    std::int32_t a = 0, b = 0, cn = 0;
+    if (!move(s, i, g, k, c, &a, &b, &cn)) return log_zero;
     return log_window(s, i + 1, cn, k - b, k - a, nullptr);
 }
 
 // decode for the logarithmic counting mode. Part i picks a segment by its
-// share of N[i][k][c], then a value inside it: the segment [a, b] is the
-// window [k - b, k - a] of row i + 1 in the segment's layer (value v leaves
-// k - v), searched on the side with less mass outside it. A value without
-// completions is never kept: when rounding lands on one, the nearest value in
-// the segment that has completions is taken, so the result is always valid.
+// share of N[i][k][c], then a value inside it: the segment's values [a, b]
+// are the window [k - b, k - a] of row i + 1 in its next layer (value v
+// leaves k - v), searched on the side with less mass outside it. A value
+// without completions is never kept: when rounding lands on one, the nearest
+// value in the segment that has completions is taken, so the result is always
+// valid.
 BCOMP_KERNEL status decode_log(const space_view& s, const limb* u, std::int32_t* out) {
     if (s.feasible == 0) return status::out_of_range;
     std::int32_t k = s.total;
@@ -411,9 +453,8 @@ BCOMP_KERNEL status decode_log(const space_view& s, const limb* u, std::int32_t*
         if (f >= 1.0) f = 0x1.fffffffffffffp-1;
         if (!(f >= 0.0)) f = 0.0;
 
-        const std::int32_t a = seg_first(s, i, g);
-        const std::int32_t b = seg_last(s, i, g) < k ? seg_last(s, i, g) : k;
-        const std::int32_t cn = c + seg_step(s, i, g);
+        std::int32_t a = 0, b = 0, cn = 0;
+        if (!move(s, i, g, k, c, &a, &b, &cn)) return status::invalid;
         const double below = log_prefix_at(s, row, cn, k - b - 1);
         const double above = log_suffix_at(s, row, cn, k - a + 1);
         std::int32_t lo = a;

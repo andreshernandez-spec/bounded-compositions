@@ -48,8 +48,21 @@ struct support_limits {
     friend bool operator!=(const support_limits& a, const support_limits& b) { return !(a == b); }
 };
 
+// A limit on the sum of some parts: min_sum <= sum of x[i] over `parts` <= max_sum.
+struct group_limit {
+    std::vector<std::int32_t> parts;
+    std::int32_t min_sum = std::numeric_limits<std::int32_t>::min();
+    std::int32_t max_sum = std::numeric_limits<std::int32_t>::max();
+
+    friend bool operator==(const group_limit& a, const group_limit& b) {
+        return a.parts == b.parts && a.min_sum == b.min_sum && a.max_sum == b.max_sum;
+    }
+    friend bool operator!=(const group_limit& a, const group_limit& b) { return !(a == b); }
+};
+
 // All x in Z^n with x[0] + ... + x[n-1] = total and lower[i] <= x[i] <= upper[i],
-// within the support limits, ordered lexicographically (first part slowest).
+// within the support and group limits, ordered lexicographically (first part
+// slowest).
 // The limits work in both counting modes: they add a dimension for the number
 // of nonzero parts so far (one layer per allowed count) and split each part's
 // values into the ones below zero, zero, and the ones above.
@@ -74,6 +87,21 @@ class space {
           counting mode = counting::exact);
     space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
           std::size_t parts, const support_limits& support, counting mode = counting::exact);
+    // With group limits as well, any number, overlapping or not. They are
+    // counted exactly in part order: from a group's first part to its last,
+    // the table also tracks the group's sum, so each part's row grows by a
+    // factor per group spanning it: total + 1 if the part before is a member,
+    // the group's sum range + 1 otherwise. Keeping each group's parts next to
+    // each other keeps one group open at a time. Also throws
+    // std::invalid_argument for an empty group, a part out of range or named
+    // twice in a group, or min_sum > max_sum, and std::length_error if the
+    // table would need more than 2^28 entries.
+    space(std::int32_t total, const std::vector<std::int32_t>& lower,
+          const std::vector<std::int32_t>& upper, const support_limits& support,
+          const std::vector<group_limit>& groups, counting mode = counting::exact);
+    space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
+          std::size_t parts, const support_limits& support, const std::vector<group_limit>& groups,
+          counting mode = counting::exact);
 
     std::size_t parts() const noexcept;
     std::int32_t total() const noexcept;
@@ -81,6 +109,7 @@ class space {
     const std::vector<std::int32_t>& upper() const noexcept;
     // For a subspace, the limits that apply to its own parts.
     const support_limits& support() const noexcept;
+    const std::vector<group_limit>& groups() const noexcept;
 
     counting counting_mode() const noexcept;
     // Number of compositions. Throws std::logic_error for a logarithmic space.
@@ -112,10 +141,10 @@ class space {
     // The compositions of the remaining parts once the first prefix.size()
     // parts are fixed to prefix: a space of parts() - prefix.size() parts that
     // shares this space's table. Its rank r is rank begin + r here, where
-    // begin is the first rank of subtree(*this, prefix). Its support() is
-    // what the limits leave for the remaining parts. Throws
-    // std::invalid_argument if the prefix leaves no part, breaks a bound or a
-    // gap, or has no completion.
+    // begin is the first rank of subtree(*this, prefix). Its support() and
+    // groups() are what the limits leave for the remaining parts. Throws
+    // std::invalid_argument if the prefix leaves no part, breaks a bound, a
+    // gap or a group limit, or has no completion.
     space subspace(const std::vector<std::int32_t>& prefix) const;
 
     // Kernel view of this space. Valid while this space or a copy of it lives.
