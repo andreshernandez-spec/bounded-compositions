@@ -32,7 +32,9 @@ target_compile_features(bounded_compositions_kernel INTERFACE cxx_std_17)
 
 # Host core and public API.
 add_library(bounded_compositions
+  src/executor.cpp
   src/natural.cpp
+  src/sequence.cpp
   src/space.cpp
   src/version.cpp)
 add_library(bounded_compositions::bounded_compositions ALIAS bounded_compositions)

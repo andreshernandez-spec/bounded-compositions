@@ -49,6 +49,16 @@ BCOMP_KERNEL int limbs_bit_length(const limb* a, int n) {
     return 64 * (n - 1) + bits;
 }
 
+// True if a is a power of two (a single set bit).
+BCOMP_KERNEL bool limbs_is_power_of_two(const limb* a, int n) {
+    n = limbs_length(a, n);
+    if (n == 0) return false;
+    for (int i = 0; i + 1 < n; ++i) {
+        if (a[i] != 0) return false;
+    }
+    return (a[n - 1] & (a[n - 1] - 1)) == 0;
+}
+
 // -1, 0 or 1 as a < b, a == b, a > b.
 BCOMP_KERNEL int limbs_cmp(const limb* a, int na, const limb* b, int nb) {
     for (int i = (na > nb ? na : nb) - 1; i >= 0; --i) {
