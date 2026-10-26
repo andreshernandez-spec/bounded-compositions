@@ -33,6 +33,10 @@ enum class sequence_kind {
     scaled_rank,
     // Independent uniform ranks from Philox4x64-10 keyed by the seed.
     iid,
+    // Sobol points (Joe-Kuo direction numbers, optionally scrambled) decoded
+    // part by part with the unit-cube codec (codec.hpp): every part's values
+    // are spread, not only the leading ones'. Points can repeat.
+    coordinate,
 };
 
 class sequence {
@@ -71,6 +75,11 @@ class sequence {
     friend sequence scaled_rank_sequence(const space& s);
     friend sequence iid_sequence(const space& s, std::uint64_t seed);
     friend sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
+    friend sequence coordinate_sequence(const space& s);
+    friend sequence coordinate_sequence(const space& s, std::uint64_t scramble_seed);
+    friend sequence coordinate_sequence(const space& s, const region& subtree);
+    friend sequence coordinate_sequence(const space& s, const region& subtree,
+                                        std::uint64_t scramble_seed);
 
   private:
     explicit sequence(std::shared_ptr<const detail::sequence_data> data);
@@ -96,6 +105,20 @@ sequence iid_sequence(const space& s, std::uint64_t seed);
 sequence rank_sequence(const space& s, const region& r);
 sequence rank_sequence(const space& s, const region& r, std::uint64_t scramble_seed);
 sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
+
+// Sobol points in parts() - 1 dimensions decoded into compositions. Unscrambled,
+// the Sobol points are those of scipy.stats.qmc.Sobol(scramble=False); the
+// seeded version applies a linear matrix scramble and a digital shift, which
+// keep each coordinate stratified over every power-of-two prefix. The first
+// part's values then match its exact distribution to within two points at
+// every power-of-two prefix. Capacity is just under 2^64. Throws
+// std::invalid_argument for more than 21202 parts.
+sequence coordinate_sequence(const space& s);
+sequence coordinate_sequence(const space& s, std::uint64_t scramble_seed);
+// Restricted to a subtree: the prefix is fixed and the Sobol points cover the
+// remaining parts. Throws std::invalid_argument if the region is not a subtree.
+sequence coordinate_sequence(const space& s, const region& subtree);
+sequence coordinate_sequence(const space& s, const region& subtree, std::uint64_t scramble_seed);
 
 }  // namespace bounded_compositions
 

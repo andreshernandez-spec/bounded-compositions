@@ -1,0 +1,115 @@
+#include "bounded_compositions/codec.hpp"
+
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "bounded_compositions/kernel/walk.hpp"
+
+namespace bounded_compositions {
+
+namespace k = kernel;
+
+namespace {
+
+int dims_of(const space& s) { return static_cast<int>(s.parts()) - 1; }
+
+// P[row][kk] as a natural, zero for kk < 0.
+natural prefix_sum(const k::space_view& v, int row, std::int32_t kk) {
+    if (kk < 0) return natural();
+    return natural::from_limbs(k::table_entry(v, row, kk),
+                               static_cast<std::size_t>(v.row_limbs[row]));
+}
+
+// floor(n * u / 2^64).
+natural scaled(const natural& n, std::uint64_t u) {
+    std::vector<k::limb> wide(n.limb_count() + 1, 0);
+    for (std::size_t i = 0; i < n.limb_count(); ++i) wide[i] = n.limbs()[i];
+    wide.back() = k::limbs_mul_add_word(wide.data(), static_cast<int>(n.limb_count()), u, 0);
+    return natural::from_limbs(wide.data() + 1, n.limb_count());
+}
+
+std::uint64_t to_fraction(double u, int i) {
+    if (!(u >= 0.0 && u < 1.0)) {  // also rejects NaN
+        throw std::out_of_range("bounded_compositions::decode: u[" + std::to_string(i) +
+                                "] is not in [0, 1)");
+    }
+    return static_cast<std::uint64_t>(std::ldexp(u, 64));
+}
+
+}  // namespace
+
+void decode(const space& s, const std::uint64_t* u, std::int32_t* out) {
+    if (k::decode(s.view(), u, out) != k::status::ok) {
+        throw std::out_of_range("bounded_compositions::decode: the space is empty");
+    }
+}
+
+void decode(const space& s, const double* u, std::int32_t* out) {
+    std::vector<std::uint64_t> fixed(static_cast<std::size_t>(dims_of(s)));
+    for (int i = 0; i < dims_of(s); ++i) fixed[static_cast<std::size_t>(i)] = to_fraction(u[i], i);
+    decode(s, fixed.data(), out);
+}
+
+void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {
+    if (!s.contains(x)) {
+        throw std::invalid_argument(
+            "bounded_compositions::encode: not a composition of this space");
+    }
+    const k::space_view v = s.view();
+    std::int32_t left = v.total;
+    for (int i = 0; i < dims_of(s); ++i) {
+        const std::int32_t y = x[i] - v.lo[i];
+        const natural count = prefix_sum(v, i, left) - prefix_sum(v, i, left - 1);  // N[i][left]
+        const natural below = prefix_sum(v, i + 1, left) - prefix_sum(v, i + 1, left - y);
+        const natural width = prefix_sum(v, i + 1, left - y) - prefix_sum(v, i + 1, left - y - 1);
+        // Centre of the cell [below, below + width), in half units so that a
+        // one-wide cell is not encoded at its edge: the smallest fraction u
+        // with u * count >= below + width / 2.
+        natural doubled = count;
+        doubled.mul_small(2);
+        natural target = below + below;
+        target += width;
+        std::uint64_t lo = 0, hi = std::numeric_limits<std::uint64_t>::max();
+        while (lo < hi) {
+            const std::uint64_t mid = lo + (hi - lo) / 2;
+            if (scaled(doubled, mid) >= target) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        const natural at = scaled(count, lo);
+        if (at < below || at >= below + width) {
+            throw std::domain_error("bounded_compositions::encode: the cell of part " +
+                                    std::to_string(i) +
+                                    " is narrower than 2^-64 and cannot be represented");
+        }
+        u[i] = lo;
+        left -= y;
+    }
+}
+
+void encode(const space& s, const std::int32_t* x, double* u) {
+    std::vector<std::uint64_t> fixed(static_cast<std::size_t>(dims_of(s)));
+    encode(s, x, fixed.data());
+    for (std::size_t i = 0; i < fixed.size(); ++i) {
+        double d = std::ldexp(static_cast<double>(fixed[i]), -64);
+        if (d >= 1.0) d = std::nextafter(1.0, 0.0);
+        u[i] = d;
+    }
+    // Rounding to 53 bits can leave a narrow cell; check the round trip.
+    std::vector<std::int32_t> back(s.parts());
+    decode(s, u, back.data());
+    for (std::size_t i = 0; i < back.size(); ++i) {
+        if (back[i] != x[i]) {
+            throw std::domain_error(
+                "bounded_compositions::encode: the composition's cell is narrower than double "
+                "precision can represent; use the 64-bit encode");
+        }
+    }
+}
+
+}  // namespace bounded_compositions
