@@ -218,13 +218,13 @@ std::vector<part_range> describe(const space& s, const region& r) {
         // still have a completion, part by part, keeping the values used.
         const std::size_t layers = static_cast<std::size_t>(v.layers);
         const std::size_t states = (static_cast<std::size_t>(p.left) + 1) * layers;
-        std::vector<char> reach(states, 0), next(states, 0);
+        std::vector<char> reach(states, char{0}), next(states, char{0});
         reach[static_cast<std::size_t>(p.left) * layers + static_cast<std::size_t>(p.layer)] = 1;
         for (std::size_t i = d; i < n; ++i) {
             const int part = static_cast<int>(i);
             std::int32_t lo = std::numeric_limits<std::int32_t>::max();
             std::int32_t hi = std::numeric_limits<std::int32_t>::min();
-            std::fill(next.begin(), next.end(), 0);
+            std::fill(next.begin(), next.end(), char{0});
             for (std::size_t st = 0; st < states; ++st) {
                 if (reach[st] == 0) continue;
                 const std::int32_t kk = static_cast<std::int32_t>(st / layers);
