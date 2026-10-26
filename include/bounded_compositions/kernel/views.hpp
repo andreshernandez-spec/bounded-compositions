@@ -33,10 +33,13 @@ namespace kernel {
 //
 // In the logarithmic counting mode there is no limb table (table, row_offset,
 // row_limbs and size are null). Instead log_prefix and log_suffix hold, for
-// each row i, log P[i][k] and log S[i][k] = log sum_{j >= k} N[i][j] at
-// i * log_stride + k for k = 0..total + 1 (the last suffix entry is log 0). A
-// window of a row is summed from whichever side has less mass outside it,
-// which keeps the subtraction well conditioned.
+// each row i and layer c, log P[i][c][k] and log S[i][c][k] =
+// log sum_{j >= k} N[i][j][c] at (i * layers + c) * log_stride + k for
+// k = 0..total + 1 (the last suffix entry is log 0). A window of a row is
+// summed from whichever side has less mass outside it, which keeps the
+// subtraction well conditioned. Whether a count is zero cannot be read from
+// rounded logarithms, so positive[(i * layers + c) * table_k + k] holds 1
+// exactly when N[i][k][c] > 0. A subspace's pointers start at its first row.
 struct space_view {
     const limb* table;
     const std::int64_t* row_offset;  // n + 1 entries
@@ -61,6 +64,7 @@ struct space_view {
     std::int32_t count_max;
     std::int32_t table_k;
     std::int32_t plain;
+    const std::uint8_t* positive;  // log mode only
 };
 
 // P[row][layer][k], for 0 <= k < table_k.
@@ -70,14 +74,18 @@ BCOMP_KERNEL const limb* table_entry(const space_view& s, int row, std::int32_t 
            (static_cast<std::int64_t>(layer) * s.table_k + k) * s.row_limbs[row];
 }
 
-// log P[row][k], with P[row][k] = 0 for k < 0 (log mode).
-BCOMP_KERNEL double log_prefix_at(const space_view& s, int row, std::int32_t k) {
-    return k < 0 ? -1e300 : s.log_prefix[row * s.log_stride + k];
+// log P[row][layer][k], with P = 0 for k < 0 (log mode).
+BCOMP_KERNEL double log_prefix_at(const space_view& s, int row, std::int32_t layer,
+                                  std::int32_t k) {
+    return k < 0 ? -1e300
+                 : s.log_prefix[(static_cast<std::int64_t>(row) * s.layers + layer) * s.log_stride +
+                                k];
 }
 
-// log S[row][k] for 0 <= k <= total + 1 (log mode).
-BCOMP_KERNEL double log_suffix_at(const space_view& s, int row, std::int32_t k) {
-    return s.log_suffix[row * s.log_stride + k];
+// log S[row][layer][k] for 0 <= k <= total + 1 (log mode).
+BCOMP_KERNEL double log_suffix_at(const space_view& s, int row, std::int32_t layer,
+                                  std::int32_t k) {
+    return s.log_suffix[(static_cast<std::int64_t>(row) * s.layers + layer) * s.log_stride + k];
 }
 
 }  // namespace kernel

@@ -103,7 +103,6 @@ void check_space(reader& in) {
             for (auto& m : sup.min_size) m = 1 + in.byte() % 4;
         }
     }
-    const bool limited = sup != bounded_compositions::support_limits{};
     const bounded_compositions::space s(total, lo, hi, sup);
     if (s.size() > natural(20000)) return;  // keep each input fast
 
@@ -243,9 +242,8 @@ void check_space(reader& in) {
     }
 
     // The logarithmic mode: same emptiness, close sizes, valid decodes, and
-    // encode inverts decode. It does not take support limits.
-    if (limited) return;
-    const bounded_compositions::space logs(total, lo, hi,
+    // encode inverts decode, with the same support limits.
+    const bounded_compositions::space logs(total, lo, hi, sup,
                                            bounded_compositions::counting::logarithmic);
     expect(!logs.empty(), "logarithmic space is non-empty too");
     expect(std::abs(logs.log_size() - s.log_size()) <= 1e-11 * std::max(1.0, s.log_size()),

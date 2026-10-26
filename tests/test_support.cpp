@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "bounded_compositions/bounded_compositions.hpp"
+#include "bounded_compositions/kernel/philox.hpp"
 
 namespace bc = bounded_compositions;
 using bc::natural;
@@ -282,16 +283,14 @@ TEST_CASE("support limits on a space wider than 64 bits") {
     CHECK(sub.support().max_count == 9);
 }
 
-TEST_CASE("support limits are validated, and the logarithmic mode refuses them") {
+TEST_CASE("support limits are validated") {
     const composition lo(4, 0), hi(4, 5);
     CHECK_THROWS_AS(bc::space(8, lo, hi, bc::support_limits{-1, 3, {}}), std::invalid_argument);
     CHECK_THROWS_AS(bc::space(8, lo, hi, bc::support_limits{3, 2, {}}), std::invalid_argument);
     CHECK_THROWS_AS(bc::space(8, lo, hi, bc::support_limits{0, 4, {1, 2}}), std::invalid_argument);
     CHECK_THROWS_AS(bc::space(8, lo, hi, bc::support_limits{0, 4, {1, 0, 1, 1}}),
                     std::invalid_argument);
-    CHECK_THROWS_AS(bc::space(8, lo, hi, bc::support_limits{0, 2, {}}, bc::counting::logarithmic),
-                    std::logic_error);
-    // Limits that change nothing are fine in either mode.
+    // Limits that change nothing give the plain space's size.
     const bc::space logs(8, lo, hi, bc::support_limits{0, 4, {1, 1, 1, 1}},
                          bc::counting::logarithmic);
     CHECK(std::abs(logs.log_size() - std::log(bc::space(8, lo, hi).size().to_double())) < 1e-12);
@@ -304,4 +303,135 @@ TEST_CASE("support limits are validated, and the logarithmic mode refuses them")
     const bc::space b(8, lo, hi);
     CHECK_THROWS_AS(bc::rank_sequence(a).overlap(bc::rank_sequence(b), 1), std::invalid_argument);
     CHECK(a.support().max_count == 3);
+}
+
+namespace {
+
+// Exact and logarithmic decode agree on Philox fractions.
+void same_points(const bc::space& exact, const bc::space& logs, unsigned seed, int draws) {
+    const std::size_t n = exact.parts();
+    const bc::kernel::limb key[2] = {seed, 2};
+    std::vector<std::uint64_t> u(n + 3);
+    composition a(n), b(n);
+    for (int t = 0; t < draws; ++t) {
+        for (std::size_t w = 0; w + 1 < n; w += 4) {
+            const bc::kernel::limb counter[4] = {static_cast<std::uint64_t>(t), 0, w / 4, 0};
+            const auto block = bc::kernel::philox4x64_10(counter, key);
+            for (std::size_t j = 0; j < 4; ++j) u[w + j] = block.v[j];
+        }
+        bc::decode(exact, u.data(), a.data());
+        bc::decode(logs, u.data(), b.data());
+        REQUIRE(a == b);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("support limits in the logarithmic mode match exact counting") {
+    int compared = 0;
+    for (const case_& c : random_cases(400, 11)) {
+        INFO("parts " << c.lo.size() << ", total " << c.total << ", count " << c.sup.min_count
+                      << ".." << c.sup.max_count << ", sizes " << c.sup.min_size.size());
+        const bc::space exact(c.total, c.lo, c.hi, c.sup);
+        const bc::space logs(c.total, c.lo, c.hi, c.sup, bc::counting::logarithmic);
+        REQUIRE(logs.empty() == c.in.empty());
+        if (c.in.empty()) {
+            CHECK(std::isinf(logs.log_size()));
+            continue;
+        }
+        const double want = std::log(static_cast<double>(c.in.size()));
+        REQUIRE(std::abs(logs.log_size() - want) <= 1e-11 * std::max(1.0, want));
+        // first/next walk the same list; encode and decode invert each other.
+        const std::size_t n = c.lo.size();
+        composition x(n), back(n);
+        std::vector<double> u(n);
+        REQUIRE(logs.first(x.data()));
+        for (std::size_t r = 0; r < c.in.size(); ++r) {
+            REQUIRE(x == c.in[r]);
+            REQUIRE(logs.contains(x));
+            bc::encode(logs, x.data(), u.data());
+            bc::decode(logs, u.data(), back.data());
+            REQUIRE(back == x);
+            REQUIRE(logs.next(x.data()) == (r + 1 < c.in.size()));
+        }
+        for (const composition& y : c.out) REQUIRE_FALSE(logs.contains(y));
+        same_points(exact, logs, static_cast<unsigned>(compared), 200);
+        ++compared;
+    }
+    CHECK(compared > 100);
+}
+
+TEST_CASE("logarithmic subspaces and iid draws with support limits") {
+    const bc::support_limits sup{1, 3, {1, 2, 2, 3, 1, 2}};
+    const composition lo{-2, 0, 0, 0, 0, -1}, hi{6, 9, 9, 9, 9, 6};
+    const bc::space exact(14, lo, hi, sup);
+    const bc::space logs(14, lo, hi, sup, bc::counting::logarithmic);
+    // Prefixes of compositions spread through the rank order.
+    std::vector<composition> prefixes;
+    for (std::uint64_t r :
+         {std::uint64_t{0}, exact.size().to_u64() / 3, exact.size().to_u64() - 1}) {
+        const composition x = exact.unrank(natural(r));
+        for (std::size_t d = 1; d <= 3; ++d)
+            prefixes.emplace_back(x.begin(), x.begin() + static_cast<long>(d));
+    }
+    for (const composition& prefix : prefixes) {
+        const bc::space es = exact.subspace(prefix);
+        const bc::space ls = logs.subspace(prefix);
+        CHECK(ls.support() == es.support());
+        CHECK(std::abs(ls.log_size() - es.log_size()) <= 1e-11 * std::max(1.0, es.log_size()));
+        same_points(es, ls, 3, 300);
+    }
+    // iid in the logarithmic mode is the conditional draw: uniform.
+    const std::uint64_t size = exact.size().to_u64();
+    const std::uint64_t draws = size * 200;
+    const bc::sequence iid = bc::iid_sequence(logs, 4);
+    std::vector<std::int32_t> pts(draws * 6);
+    iid.points(0, draws, pts.data());
+    std::vector<double> hits(size, 0.0);
+    for (std::uint64_t i = 0; i < draws; ++i) hits[exact.rank(pts.data() + i * 6).to_u64()] += 1.0;
+    double chi2 = 0.0;
+    for (double h : hits) chi2 += (h - 200.0) * (h - 200.0) / 200.0;
+    const double df = static_cast<double>(size - 1), z = 4.753;
+    const double limit = df * std::pow(1.0 - 2.0 / (9.0 * df) + z * std::sqrt(2.0 / (9.0 * df)), 3);
+    INFO("chi2 = " << chi2 << ", limit = " << limit);
+    CHECK(chi2 < limit);
+}
+
+TEST_CASE("support limits on a space only the logarithmic mode can count") {
+    // 1000 parts summing to 1000, at most 50 nonzero, each nonzero at least 5:
+    // sum over m of C(1000, m) C(1000 - 4m - 1, m - 1).
+    bc::support_limits sup;
+    sup.max_count = 50;
+    sup.min_size.assign(1000, 5);
+    const bc::space logs(1000, composition(1000, 0), composition(1000, 1000), sup,
+                         bc::counting::logarithmic);
+    auto log_choose = [](double a, double b) {
+        return std::lgamma(a + 1) - std::lgamma(b + 1) - std::lgamma(a - b + 1);
+    };
+    std::vector<double> terms;
+    for (int m = 1; m <= 50; ++m) {
+        terms.push_back(log_choose(1000, m) + log_choose(1000 - 4 * m - 1, m - 1));
+    }
+    const double top = *std::max_element(terms.begin(), terms.end());
+    double sum = 0.0;
+    for (double t : terms) sum += std::exp(t - top);
+    const double want = top + std::log(sum);
+    INFO("log size " << logs.log_size() << ", closed form " << want);
+    CHECK(std::abs(logs.log_size() - want) <= 1e-9 * want);
+    // Coordinate points are compositions within the limits.
+    std::vector<std::int32_t> pts(200 * 1000);
+    bc::coordinate_sequence(logs, 8).points(0, 200, pts.data());
+    for (std::size_t i = 0; i < 200; ++i) {
+        const std::int32_t* x = pts.data() + i * 1000;
+        REQUIRE(logs.contains(x));
+        int nonzero = 0;
+        for (std::size_t j = 0; j < 1000; ++j) {
+            if (x[j] != 0) {
+                ++nonzero;
+                REQUIRE(x[j] >= 5);
+            }
+        }
+        REQUIRE(nonzero >= 1);
+        REQUIRE(nonzero <= 50);
+    }
 }

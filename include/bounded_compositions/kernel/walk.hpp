@@ -44,9 +44,12 @@ BCOMP_KERNEL std::int32_t step_of(const space_view& s, int i, std::int32_t y) {
     return -1;
 }
 
-// N[row][layer][k] > 0.
+// N[row][layer][k] > 0, in either counting mode.
 BCOMP_KERNEL bool has_completion(const space_view& s, int row, std::int32_t layer, std::int32_t k) {
     if (k < 0 || layer < 0 || layer >= s.layers) return false;
+    if (s.log_mode != 0) {
+        return s.positive[(static_cast<std::int64_t>(row) * s.layers + layer) * s.table_k + k] != 0;
+    }
     const int w = s.row_limbs[row];
     const limb* p = table_entry(s, row, layer, k);
     return k == 0 ? !limbs_is_zero(p, w) : limbs_cmp(p, w, p - w, w) != 0;
@@ -330,19 +333,21 @@ BCOMP_KERNEL status next(const space_view& s, std::int32_t* x) {
     return status::out_of_range;
 }
 
-// Log mode: log of N[row][lo] + ... + N[row][hi] (lo <= hi), summed from the
-// side with less mass outside the window, P[hi] - P[lo - 1] or S[lo] - S[hi + 1].
-// If side is not null, writes 0 for the prefix side and 1 for the suffix side.
-BCOMP_KERNEL double log_window(const space_view& s, int row, std::int32_t lo, std::int32_t hi,
-                               int* side) {
-    const double below = log_prefix_at(s, row, lo - 1);
-    const double above = log_suffix_at(s, row, hi + 1);
+// Log mode: log of N[row][lo][layer] + ... + N[row][hi][layer] (lo <= hi),
+// summed from the side with less mass outside the window, P[hi] - P[lo - 1] or
+// S[lo] - S[hi + 1]. Zero windows come out as log_zero exactly, since the sums
+// do not change across zero entries. If side is not null, writes 0 for the
+// prefix side and 1 for the suffix side.
+BCOMP_KERNEL double log_window(const space_view& s, int row, std::int32_t layer, std::int32_t lo,
+                               std::int32_t hi, int* side) {
+    const double below = log_prefix_at(s, row, layer, lo - 1);
+    const double above = log_suffix_at(s, row, layer, hi + 1);
     if (below <= above) {
         if (side != nullptr) *side = 0;
-        return log_sub(log_prefix_at(s, row, hi), below);
+        return log_sub(log_prefix_at(s, row, layer, hi), below);
     }
     if (side != nullptr) *side = 1;
-    return log_sub(log_suffix_at(s, row, lo), above);
+    return log_sub(log_suffix_at(s, row, layer, lo), above);
 }
 
 // u / 2^64 as a double strictly below 1.
@@ -351,51 +356,113 @@ BCOMP_KERNEL double unit_fraction(limb u) {
     return x < 1.0 ? x : 0x1.fffffffffffffp-1;
 }
 
-// decode for the logarithmic counting mode. Part i's choice is a window
-// [k - m, k] of row i + 1 (value v leaves k - v), searched on the side with
-// less mass outside it. The result is clamped to the values that leave a
-// feasible completion, so rounding can never produce an invalid composition.
+// log of the completions of segment g of part i, in layer c with k left: the
+// window [k - b, k - a] of row i + 1 in the segment's layer.
+BCOMP_KERNEL double log_segment(const space_view& s, int i, int g, std::int32_t k, std::int32_t c) {
+    const std::int32_t a = seg_first(s, i, g);
+    const std::int32_t b = seg_last(s, i, g) < k ? seg_last(s, i, g) : k;
+    const std::int32_t cn = c + seg_step(s, i, g);
+    if (a > b || cn >= s.layers) return log_zero;
+    return log_window(s, i + 1, cn, k - b, k - a, nullptr);
+}
+
+// decode for the logarithmic counting mode. Part i picks a segment by its
+// share of N[i][k][c], then a value inside it: the segment [a, b] is the
+// window [k - b, k - a] of row i + 1 in the segment's layer (value v leaves
+// k - v), searched on the side with less mass outside it. A value without
+// completions is never kept: when rounding lands on one, the nearest value in
+// the segment that has completions is taken, so the result is always valid.
 BCOMP_KERNEL status decode_log(const space_view& s, const limb* u, std::int32_t* out) {
     if (s.feasible == 0) return status::out_of_range;
     std::int32_t k = s.total;
+    std::int32_t c = s.layer_base;
     for (int i = 0; i + 1 < s.n; ++i) {
         const int row = i + 1;
-        const std::int32_t m = s.cap[i] < k ? s.cap[i] : k;
-        const std::int32_t rest = s.cap_suffix[row];
-        const std::int32_t vmin = k > rest ? k - rest : 0;
-        const double f = unit_fraction(u[i]);
-        const double below = log_prefix_at(s, row, k - m - 1);
-        const double above = log_suffix_at(s, row, k + 1);
-        std::int32_t a = 0;
-        std::int32_t b = m;
+        // The segment whose cumulative share passes f, then f within it. A
+        // single segment holds everything.
+        double f = unit_fraction(u[i]);
+        int g = 0;
+        if (s.segs[i] > 1) {
+            double mass[3] = {log_zero, log_zero, log_zero};
+            double whole = log_zero;
+            for (int h = 0; h < s.segs[i]; ++h) {
+                mass[h] = log_segment(s, i, h, k, c);
+                whole = log_add(whole, mass[h]);
+            }
+            g = -1;
+            int last = -1;
+            for (int h = 0; h < s.segs[i]; ++h) {
+                if (log_is_zero(mass[h])) continue;
+                last = h;
+                const double share = BCOMP_EXP(mass[h] - whole);
+                if (f < share) {
+                    g = h;
+                    f /= share;
+                    break;
+                }
+                f -= share;
+            }
+            if (last < 0) return status::invalid;  // no completion at all
+            if (g < 0) {                           // rounding past the last segment
+                g = last;
+                f = 0x1.fffffffffffffp-1;
+            }
+        }
+        if (f >= 1.0) f = 0x1.fffffffffffffp-1;
+        if (!(f >= 0.0)) f = 0.0;
+
+        const std::int32_t a = seg_first(s, i, g);
+        const std::int32_t b = seg_last(s, i, g) < k ? seg_last(s, i, g) : k;
+        const std::int32_t cn = c + seg_step(s, i, g);
+        const double below = log_prefix_at(s, row, cn, k - b - 1);
+        const double above = log_suffix_at(s, row, cn, k - a + 1);
+        std::int32_t lo = a;
+        std::int32_t hi = b;
         if (below <= above) {
-            // cum(v) = P[k] - P[k - v - 1] > f W  <=>  P[k - v - 1] < below + (1 - f) W
-            const double w = log_sub(log_prefix_at(s, row, k), below);
+            // cum(v) = P[k - a] - P[k - v - 1] > f W  <=>  P[k - v - 1] < below + (1 - f) W
+            const double w = log_sub(log_prefix_at(s, row, cn, k - a), below);
             const double t = log_add(below, BCOMP_LOG1P(-f) + w);
-            while (a < b) {
-                const std::int32_t mid = a + (b - a) / 2;
-                if (log_prefix_at(s, row, k - mid - 1) < t) {
-                    b = mid;
+            while (lo < hi) {
+                const std::int32_t mid = lo + (hi - lo) / 2;
+                if (log_prefix_at(s, row, cn, k - mid - 1) < t) {
+                    hi = mid;
                 } else {
-                    a = mid + 1;
+                    lo = mid + 1;
                 }
             }
         } else {
-            // cum(v) = S[k - v] - S[k + 1] > f W  <=>  S[k - v] > above + f W
-            const double w = log_sub(log_suffix_at(s, row, k - m), above);
+            // cum(v) = S[k - v] - S[k - a + 1] > f W  <=>  S[k - v] > above + f W
+            const double w = log_sub(log_suffix_at(s, row, cn, k - b), above);
             const double t = f > 0.0 ? log_add(above, BCOMP_LOG(f) + w) : above;
-            while (a < b) {
-                const std::int32_t mid = a + (b - a) / 2;
-                if (log_suffix_at(s, row, k - mid) > t) {
-                    b = mid;
+            while (lo < hi) {
+                const std::int32_t mid = lo + (hi - lo) / 2;
+                if (log_suffix_at(s, row, cn, k - mid) > t) {
+                    hi = mid;
                 } else {
-                    a = mid + 1;
+                    lo = mid + 1;
                 }
             }
         }
-        if (a < vmin) a = vmin;
-        out[i] = a + s.lo[i];
-        k -= a;
+        if (s.plain != 0) {
+            // Without limits the values left with a completion are those that
+            // leave the later parts no more than they can hold.
+            const std::int32_t rest = s.cap_suffix[row];
+            if (lo < k - rest) lo = k - rest;
+        } else if (!has_completion(s, row, cn, k - lo)) {
+            for (std::int32_t d = 1; d <= b - a; ++d) {
+                if (lo + d <= b && has_completion(s, row, cn, k - lo - d)) {
+                    lo += d;
+                    break;
+                }
+                if (lo - d >= a && has_completion(s, row, cn, k - lo + d)) {
+                    lo -= d;
+                    break;
+                }
+            }
+        }
+        out[i] = lo + s.lo[i];
+        k -= lo;
+        c = cn;
     }
     out[s.n - 1] = k + s.lo[s.n - 1];
     return status::ok;
