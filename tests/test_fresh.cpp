@@ -476,3 +476,130 @@ TEST_CASE("fresh_sampler shared by threads never hands out a point twice") {
         CHECK(v.size() == size);
     }
 }
+
+namespace {
+
+// A limit the space does not count: x[0] + 2 x[1] - x[n-1] <= bound.
+struct linear_limit {
+    std::int32_t bound;
+    std::size_t parts;
+};
+
+bool keep_linear(void* context, const std::int32_t* x) {
+    const linear_limit& l = *static_cast<const linear_limit*>(context);
+    const std::int32_t second = l.parts > 1 ? x[1] : 0;
+    return x[0] + 2 * second - x[l.parts - 1] <= l.bound;
+}
+
+bool keep_nothing(void*, const std::int32_t*) { return false; }
+
+}  // namespace
+
+TEST_CASE("fresh_sampler with a filter hands out exactly the accepted unvisited points") {
+    std::mt19937 rng(61);
+    for (const bc::space& s : random_spaces(50, 67)) {
+        const std::uint64_t size = s.size().to_u64();
+        for (const bc::region& r : some_regions(s, rng)) {
+            const std::uint64_t a = r.begin().to_u64(), b = r.end().to_u64();
+            linear_limit limit{static_cast<std::int32_t>(rng() % 9) - 2, s.parts()};
+            for (int kind = 0; kind < 3; ++kind) {
+                bc::visited_set v(s);
+                std::set<std::uint64_t> before;
+                for (std::uint64_t x = 0; x < size; ++x) {
+                    if (rng() % 4 == 0) {
+                        v.insert(natural(x));
+                        before.insert(x);
+                    }
+                }
+                const bc::sequence source = kind == 0   ? bc::rank_sequence(s, r)
+                                            : kind == 1 ? bc::iid_sequence(s, r, 3)
+                                                        : bc::rank_sequence(s, r, 5);
+                bc::fresh_sampler f(source, v, &keep_linear, &limit, 64);
+                const std::vector<std::uint64_t> got = drain(f, s, rng);
+                std::set<std::uint64_t> expected;
+                std::uint64_t visited_inside = 0, refused = 0;
+                for (std::uint64_t x = a; x < b; ++x) {
+                    if (before.count(x) != 0) {
+                        ++visited_inside;
+                        continue;
+                    }
+                    const composition y = s.unrank(natural(x));
+                    if (keep_linear(&limit, y.data())) {
+                        expected.insert(x);
+                    } else {
+                        ++refused;
+                    }
+                }
+                REQUIRE(std::set<std::uint64_t>(got.begin(), got.end()) == expected);
+                REQUIRE(got.size() == expected.size());
+                REQUIRE(f.exhausted());
+                REQUIRE(f.accepted() == expected.size());
+                REQUIRE(v.size() == before.size() + expected.size());  // rejected ones not added
+                if (kind != 1) {
+                    // A rank source checks each point of the region once, in order.
+                    std::vector<std::uint64_t> order;
+                    for (std::uint64_t x : ranks_of(source, source.capacity())) {
+                        if (expected.count(x) != 0) order.push_back(x);
+                    }
+                    REQUIRE(got == order);
+                    REQUIRE(f.rejected() == refused);
+                    REQUIRE(f.skipped() == visited_inside);
+                }
+            }
+        }
+    }
+    // A filter that refuses everything ends a rank source after one pass, and
+    // moves an iid source to the rank order, which then ends too.
+    const bc::space s(20, composition(4, 0), composition(4, 9));
+    for (const bc::sequence& source : {bc::rank_sequence(s), bc::iid_sequence(s, 1)}) {
+        bc::visited_set v(s);
+        bc::fresh_sampler f(source, v, &keep_nothing, nullptr, 100);
+        std::vector<std::int32_t> out(10 * 4);
+        CHECK(f.take(10, out.data()) == 0);
+        CHECK(f.exhausted());
+        CHECK(v.size() == 0);
+        if (source.kind() == bc::sequence_kind::rank) CHECK(f.rejected() == s.size().to_u64());
+    }
+    bc::visited_set v(s);
+    CHECK_THROWS_AS(bc::fresh_sampler(bc::rank_sequence(s), v, nullptr, nullptr),
+                    std::invalid_argument);
+}
+
+TEST_CASE("fresh_sampler with a filter shared by threads") {
+    const bc::space s(40, composition(5, 0), composition(5, 14));
+    const std::uint64_t size = s.size().to_u64();
+    linear_limit limit{6, 5};
+    std::set<std::uint64_t> expected;
+    for (std::uint64_t x = 0; x < size; ++x) {
+        const composition y = s.unrank(natural(x));
+        if (x % 5 != 0 && keep_linear(&limit, y.data())) expected.insert(x);
+    }
+    for (int kind = 0; kind < 2; ++kind) {
+        bc::visited_set v(s);
+        for (std::uint64_t x = 0; x < size; x += 5) v.insert(natural(x));
+        const bc::sequence source = kind == 0 ? bc::rank_sequence(s, 2) : bc::iid_sequence(s, 2);
+        bc::fresh_sampler f(source, v, &keep_linear, &limit, 256);
+        std::vector<std::vector<std::uint64_t>> got(6);
+        bc::thread_pool pool(3);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 6; ++t) {
+            threads.emplace_back([&, t] {
+                std::vector<std::int32_t> pts(53 * 5);
+                for (;;) {
+                    const std::uint64_t n = f.take(53, pts.data(), t % 2 == 0 ? &pool : nullptr);
+                    for (std::uint64_t i = 0; i < n; ++i) {
+                        got[static_cast<std::size_t>(t)].push_back(
+                            s.rank(pts.data() + i * 5).to_u64());
+                    }
+                    if (n < 53) return;
+                }
+            });
+        }
+        for (auto& th : threads) th.join();
+        std::multiset<std::uint64_t> all;
+        for (const auto& g : got) all.insert(g.begin(), g.end());
+        CHECK(std::set<std::uint64_t>(all.begin(), all.end()) == expected);
+        CHECK(all.size() == expected.size());
+        CHECK(f.accepted() == expected.size());
+    }
+}

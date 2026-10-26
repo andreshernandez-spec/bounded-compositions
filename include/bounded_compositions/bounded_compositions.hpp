@@ -7,6 +7,7 @@
 #include "bounded_compositions/fresh.hpp"
 #include "bounded_compositions/natural.hpp"
 #include "bounded_compositions/region.hpp"
+#include "bounded_compositions/repair.hpp"
 #include "bounded_compositions/sequence.hpp"
 #include "bounded_compositions/space.hpp"
 

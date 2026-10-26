@@ -37,6 +37,7 @@ add_library(bounded_compositions
   src/fresh.cpp
   src/natural.cpp
   src/region.cpp
+  src/repair.cpp
   src/sequence.cpp
   src/sobol.cpp
   src/sobol_directions.cpp
