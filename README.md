@@ -4,8 +4,9 @@ Count, rank, enumerate and sample bounded integer compositions:
 
     { x in Z^n : x[0] + ... + x[n-1] = K,  lo[i] <= x[i] <= hi[i] }
 
-optionally with limits on the number of nonzero parts and semicontinuous parts
-(each nonzero `x[i]` at least `s[i]` in size), in either counting mode.
+optionally with limits on the number of nonzero parts, semicontinuous parts
+(each nonzero `x[i]` at least `s[i]` in size) and the sums of groups of parts,
+in either counting mode.
 
 The goal is sampling that can be extended in place (the first N points are
 well spread for every N, and asking for more continues the same sequence), and

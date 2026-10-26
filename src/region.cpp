@@ -49,9 +49,11 @@ prefix_place place_prefix(const space& s, const std::vector<std::int32_t>& prefi
     for (std::size_t i = 0; i < prefix.size(); ++i) {
         const int part = static_cast<int>(i);
         const std::int64_t y = static_cast<std::int64_t>(prefix[i]) - v.lo[i];
-        const std::int32_t step =
-            y < 0 || y > v.cap[i] ? -1 : k::step_of(v, part, static_cast<std::int32_t>(y));
-        if (step < 0 || y > out.left) {
+        const std::int32_t next =
+            y < 0 || y > v.cap[i] || y > out.left
+                ? -1
+                : k::layer_after(v, part, out.left, out.layer, static_cast<std::int32_t>(y));
+        if (next < 0) {
             throw std::invalid_argument("bounded_compositions::subtree: prefix value " +
                                         std::to_string(prefix[i]) + " at part " +
                                         std::to_string(i) + " is out of range");
@@ -59,7 +61,7 @@ prefix_place place_prefix(const space& s, const std::vector<std::int32_t>& prefi
         const std::int32_t yy = static_cast<std::int32_t>(y);
         out.begin += below_of(v, part, out.left, out.layer, yy);
         out.left -= yy;
-        out.layer += step;
+        out.layer = next;
     }
     out.size = completions_of(v, static_cast<int>(prefix.size()), out.layer, out.left);
     if (out.size.is_zero()) {
@@ -123,9 +125,9 @@ std::vector<region> children(const space& s, const region& r) {
     // Values in increasing order are children in rank order.
     natural begin = r.begin();
     for (int g = 0; g < v.segs[part]; ++g) {
-        const std::int32_t next = p.layer + k::seg_step(v, part, g);
-        const std::int32_t last = std::min(k::seg_last(v, part, g), p.left);
-        for (std::int32_t y = k::seg_first(v, part, g); y <= last; ++y) {
+        std::int32_t first = 0, last = 0, next = 0;
+        if (!k::move(v, part, g, p.left, p.layer, &first, &last, &next)) continue;
+        for (std::int32_t y = first; y <= last; ++y) {
             const natural size = completions_of(v, part + 1, next, p.left - y);
             if (size.is_zero()) continue;
             out.push_back(interval(s, begin, begin + size));
@@ -216,28 +218,28 @@ std::vector<part_range> describe(const space& s, const region& r) {
     } else {
         // Walk the states (k left, layer) reachable from the prefix that
         // still have a completion, part by part, keeping the values used.
-        const std::size_t layers = static_cast<std::size_t>(v.layers);
-        const std::size_t states = (static_cast<std::size_t>(p.left) + 1) * layers;
-        std::vector<char> reach(states, char{0}), next(states, char{0});
-        reach[static_cast<std::size_t>(p.left) * layers + static_cast<std::size_t>(p.layer)] = 1;
+        const std::size_t width = static_cast<std::size_t>(p.left) + 1;
+        std::vector<char> reach(width * static_cast<std::size_t>(v.row_layers[d]), char{0});
+        reach[static_cast<std::size_t>(p.layer) * width + static_cast<std::size_t>(p.left)] = 1;
         for (std::size_t i = d; i < n; ++i) {
             const int part = static_cast<int>(i);
+            const std::size_t layers = static_cast<std::size_t>(v.row_layers[i]);
+            std::vector<char> next(width * static_cast<std::size_t>(v.row_layers[i + 1]), char{0});
             std::int32_t lo = std::numeric_limits<std::int32_t>::max();
             std::int32_t hi = std::numeric_limits<std::int32_t>::min();
-            std::fill(next.begin(), next.end(), char{0});
-            for (std::size_t st = 0; st < states; ++st) {
+            for (std::size_t st = 0; st < width * layers; ++st) {
                 if (reach[st] == 0) continue;
-                const std::int32_t kk = static_cast<std::int32_t>(st / layers);
-                const std::int32_t c = static_cast<std::int32_t>(st % layers);
+                const std::int32_t c = static_cast<std::int32_t>(st / width);
+                const std::int32_t kk = static_cast<std::int32_t>(st % width);
                 for (int g = 0; g < v.segs[part]; ++g) {
-                    const std::int32_t cn = c + k::seg_step(v, part, g);
-                    const std::int32_t last = std::min(k::seg_last(v, part, g), kk);
-                    for (std::int32_t y = k::seg_first(v, part, g); y <= last; ++y) {
+                    std::int32_t first = 0, last = 0, cn = 0;
+                    if (!k::move(v, part, g, kk, c, &first, &last, &cn)) continue;
+                    for (std::int32_t y = first; y <= last; ++y) {
                         if (!k::has_completion(v, part + 1, cn, kk - y)) continue;
                         lo = std::min(lo, y);
                         hi = std::max(hi, y);
-                        next[static_cast<std::size_t>(kk - y) * layers +
-                             static_cast<std::size_t>(cn)] = 1;
+                        next[static_cast<std::size_t>(cn) * width +
+                             static_cast<std::size_t>(kk - y)] = 1;
                     }
                 }
             }

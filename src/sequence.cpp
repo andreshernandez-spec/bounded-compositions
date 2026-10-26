@@ -129,7 +129,7 @@ void sequence_data::write_points(std::uint64_t first, std::uint64_t count,
 
 bool same_space(const space& a, const space& b) {
     return a.total() == b.total() && a.lower() == b.lower() && a.upper() == b.upper() &&
-           a.support() == b.support();
+           a.support() == b.support() && a.groups() == b.groups();
 }
 
 }  // namespace detail

@@ -49,13 +49,14 @@ std::vector<double> encode_log(const space& s, const std::int32_t* x) {
         double before = k::log_zero;
         std::int32_t next = layer;
         for (int g = 0; g < v.segs[i]; ++g) {
-            const double mass = k::log_segment(v, i, g, left, layer);
+            std::int32_t a = 0, b = 0, cn = 0;
+            if (!k::move(v, i, g, left, layer, &a, &b, &cn)) continue;
+            const double mass = k::log_window(v, row, cn, left - b, left - a, nullptr);
             whole = k::log_add(whole, mass);
-            const std::int32_t a = k::seg_first(v, i, g);
-            if (k::seg_last(v, i, g) < y) {
+            if (b < y) {
                 before = k::log_add(before, mass);
             } else if (a <= y) {
-                next = layer + k::seg_step(v, i, g);
+                next = cn;
                 if (y > a) {
                     before = k::log_add(
                         before, k::log_window(v, row, next, left - y + 1, left - a, nullptr));
@@ -121,7 +122,7 @@ void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {
     std::int32_t layer = v.layer_base;
     for (int i = 0; i < dims_of(s); ++i) {
         const std::int32_t y = x[i] - v.lo[i];
-        const std::int32_t next = layer + k::step_of(v, i, y);
+        const std::int32_t next = k::layer_after(v, i, left, layer, y);
         const natural count = detail::completions_of(v, i, layer, left);
         const natural below = detail::below_of(v, i, left, layer, y);
         const natural width = detail::completions_of(v, i + 1, next, left - y);

@@ -24,7 +24,12 @@ struct space_data {
     std::vector<std::int32_t> lower, upper;
     std::vector<std::int32_t> cap, cap_suffix;
     support_limits support;
-    std::vector<std::int32_t> seg, segs;  // see kernel::space_view
+    std::vector<group_limit> groups;
+    // See kernel::space_view.
+    std::vector<std::int32_t> seg, segs;
+    std::vector<std::int32_t> row_layers;
+    std::vector<std::int64_t> row_layer_start;
+    std::vector<std::int32_t> row_open_start, row_open, act_start, act, grp_lo, grp_hi;
     std::vector<std::int64_t> row_offset;
     std::vector<std::int32_t> row_limbs;
     std::vector<k::limb> table;
@@ -41,6 +46,9 @@ struct space_data {
 }  // namespace detail
 
 namespace {
+
+// Table entries (layers times total + 1, over all rows) a space may need.
+constexpr std::int64_t max_entries = std::int64_t{1} << 28;
 
 int as_int(std::size_t n) { return static_cast<int>(n); }
 
@@ -65,56 +73,52 @@ void require_exact(const detail::space_data& d, const char* what) {
 }
 
 // Prefix sums of the counting table, one row per part plus the empty suffix,
-// each row `layers` blocks of total + 1 entries. Row i is computed from row
-// i+1 one limb wider than row i+1 (an entry is a sum over at most three
-// segments of differences of row i+1, over at most total + 1 values of k, and
-// 3 (total + 1) < 2^64), then trimmed to the width of its largest entry, the
-// last of some layer.
-void build_table(detail::space_data& d, std::int32_t shifted_total, std::int32_t layers) {
+// row i holding row_layers[i] blocks of total + 1 entries. Row i is computed
+// from row i+1 one limb wider than row i+1 (an entry is a sum over at most
+// three segments of differences of row i+1, over at most total + 1 values of
+// k, and 3 (total + 1) < 2^64), then trimmed to the width of its largest
+// entry, the last of some layer.
+void build_table(detail::space_data& d, std::int32_t shifted_total) {
     const std::size_t n = d.cap.size();
     const std::size_t width_k = static_cast<std::size_t>(shifted_total) + 1;
-    const std::size_t entries = static_cast<std::size_t>(layers) * width_k;
     std::vector<std::vector<k::limb>> rows(n + 1);
     std::vector<int> widths(n + 1);
-    const k::space_view& v = d.view;  // segments and count limits are set
+    const k::space_view& v = d.view;  // segments, groups and count limits are set
 
     // N[n][0][c] = 1 for an allowed count c and N[n][k > 0][c] = 0, so P[n][c][k]
     // is that 1 or 0 for every k.
     widths[n] = 1;
-    rows[n].assign(entries, 0);
-    for (std::int32_t c = 0; c < layers; ++c) {
+    rows[n].assign(static_cast<std::size_t>(d.row_layers[n]) * width_k, 0);
+    for (std::int32_t c = 0; c < d.row_layers[n]; ++c) {
         if (c < v.count_min || c > v.count_max) continue;
-        std::fill(
-            rows[n].begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(c) * width_k),
-            rows[n].begin() +
-                static_cast<std::ptrdiff_t>((static_cast<std::size_t>(c) + 1) * width_k),
-            k::limb{1});
+        const auto at = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(c) * width_k);
+        std::fill(rows[n].begin() + at, rows[n].begin() + at + static_cast<std::ptrdiff_t>(width_k),
+                  k::limb{1});
     }
 
     std::vector<k::limb> count;
     for (std::size_t i = n; i-- > 0;) {
+        const int part = static_cast<int>(i);
         const int wn = widths[i + 1];
         const int wc = wn + 1;
         const std::size_t un = static_cast<std::size_t>(wn);
         const std::size_t uc = static_cast<std::size_t>(wc);
+        const std::size_t layers = static_cast<std::size_t>(d.row_layers[i]);
         const std::vector<k::limb>& next = rows[i + 1];
         auto at = [&](std::int32_t c, std::int32_t kk) {
             return &next[(static_cast<std::size_t>(c) * width_k + static_cast<std::size_t>(kk)) *
                          un];
         };
-        std::vector<k::limb> row(entries * uc, 0);
+        std::vector<k::limb> row(layers * width_k * uc, 0);
         count.assign(uc, 0);
-        const int segs = v.segs[i];
-        for (std::int32_t c = 0; c < layers; ++c) {
+        for (std::int32_t c = 0; c < d.row_layers[i]; ++c) {
             for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
-                // N[i][kk][c]: over each segment [a, b], P[i+1][cn][kk - a] -
-                // P[i+1][cn][kk - min(b, kk) - 1].
+                // N[i][kk][c]: over each segment's allowed values [a, b],
+                // P[i+1][cn][kk - a] - P[i+1][cn][kk - b - 1].
                 k::limbs_zero(count.data(), wc);
-                for (int g = 0; g < segs; ++g) {
-                    const std::int32_t a = k::seg_first(v, static_cast<int>(i), g);
-                    const std::int32_t b = std::min(k::seg_last(v, static_cast<int>(i), g), kk);
-                    const std::int32_t cn = c + k::seg_step(v, static_cast<int>(i), g);
-                    if (a > b || cn >= layers) continue;
+                for (int g = 0; g < v.segs[part]; ++g) {
+                    std::int32_t a = 0, b = 0, cn = 0;
+                    if (!k::move(v, part, g, kk, c, &a, &b, &cn)) continue;
                     k::limbs_add(count.data(), wc, at(cn, kk - a), wn, count.data(), wc);
                     if (kk - b - 1 >= 0) {
                         k::limbs_sub(count.data(), wc, at(cn, kk - b - 1), wn, count.data(), wc);
@@ -131,9 +135,8 @@ void build_table(detail::space_data& d, std::int32_t shifted_total, std::int32_t
             }
         }
         int w = 1;
-        for (std::int32_t c = 0; c < layers; ++c) {
-            const k::limb* largest =
-                &row[(static_cast<std::size_t>(c) * width_k + width_k - 1) * uc];
+        for (std::size_t c = 0; c < layers; ++c) {
+            const k::limb* largest = &row[(c * width_k + width_k - 1) * uc];
             w = std::max(w, k::limbs_length(largest, wc));
         }
         if (w > k::max_limbs) {
@@ -142,8 +145,8 @@ void build_table(detail::space_data& d, std::int32_t shifted_total, std::int32_t
                                     std::to_string(k::max_limbs) + " (BCOMP_MAX_LIMBS)");
         }
         if (w < wc) {
-            std::vector<k::limb> trimmed(entries * static_cast<std::size_t>(w));
-            for (std::size_t e = 0; e < entries; ++e) {
+            std::vector<k::limb> trimmed(layers * width_k * static_cast<std::size_t>(w));
+            for (std::size_t e = 0; e < layers * width_k; ++e) {
                 k::limbs_copy(&row[e * uc], wc, &trimmed[e * static_cast<std::size_t>(w)], w);
             }
             row.swap(trimmed);
@@ -179,58 +182,52 @@ void build_table(detail::space_data& d, std::int32_t shifted_total, std::int32_t
 }
 
 // Logarithmic table: for each row and layer, log P and log S over
-// k = 0..total + 1. N[i][k][c] sums, over part i's segments [a, b], the window
-// [k - min(b, k), k - a] of row i + 1 in the segment's layer, each summed from
-// the side with less mass outside it (see log_window in walk.hpp).
-void build_log_table(detail::space_data& d, std::int32_t shifted_total, std::int32_t layers) {
+// k = 0..total + 1. N[i][k][c] sums, over part i's segments, the window
+// [k - b, k - a] of row i + 1 in the layer the segment leads to, each summed
+// from the side with less mass outside it (see log_window in walk.hpp).
+// positive records exactly which counts are nonzero.
+void build_log_table(detail::space_data& d, std::int32_t shifted_total) {
     const std::size_t n = d.cap.size();
     const std::size_t stride = static_cast<std::size_t>(shifted_total) + 2;
-    const std::size_t L = static_cast<std::size_t>(layers);
-    d.log_prefix.assign((n + 1) * L * stride, k::log_zero);
-    d.log_suffix.assign((n + 1) * L * stride, k::log_zero);
+    const std::size_t width_k = static_cast<std::size_t>(shifted_total) + 1;
+    const std::size_t all_layers = static_cast<std::size_t>(d.row_layer_start[n] + d.row_layers[n]);
+    d.log_prefix.assign(all_layers * stride, k::log_zero);
+    d.log_suffix.assign(all_layers * stride, k::log_zero);
+    d.positive.assign(all_layers * width_k, std::uint8_t{0});
     double* P = d.log_prefix.data();
     double* S = d.log_suffix.data();
-    const k::space_view& v = d.view;  // segments and count limits are set
-    auto at = [&](std::size_t row, std::int32_t c) {
-        return (row * L + static_cast<std::size_t>(c)) * stride;
+    const k::space_view& v = d.view;  // segments, groups and count limits are set
+    auto start = [&](std::size_t row, std::int32_t c) {
+        return static_cast<std::size_t>(d.row_layer_start[row]) + static_cast<std::size_t>(c);
     };
-    // positive: N > 0, exactly, with prefix counts of row i + 1 for windows.
-    const std::size_t width_k = static_cast<std::size_t>(shifted_total) + 1;
-    d.positive.assign((n + 1) * L * width_k, std::uint8_t{0});
-    auto pos_at = [&](std::size_t row, std::int32_t c) {
-        return (row * L + static_cast<std::size_t>(c)) * width_k;
-    };
-    std::vector<std::int32_t> ones(L * (width_k + 1));
     // Row n: N[n][0][c] = 1 for an allowed count c, every other entry 0.
-    for (std::int32_t c = 0; c < layers; ++c) {
+    for (std::int32_t c = 0; c < d.row_layers[n]; ++c) {
         if (c < v.count_min || c > v.count_max) continue;
-        for (std::size_t kk = 0; kk <= static_cast<std::size_t>(shifted_total); ++kk) {
-            P[at(n, c) + kk] = 0.0;
-        }
-        S[at(n, c)] = 0.0;
-        d.positive[pos_at(n, c)] = 1;
+        for (std::size_t kk = 0; kk < width_k; ++kk) P[start(n, c) * stride + kk] = 0.0;
+        S[start(n, c) * stride] = 0.0;
+        d.positive[start(n, c) * width_k] = 1;
     }
     std::vector<double> count(stride);
+    std::vector<std::int32_t> ones;  // prefix counts of positive entries of row i + 1
     for (std::size_t i = n; i-- > 0;) {
         const int part = static_cast<int>(i);
-        for (std::int32_t c = 0; c < layers; ++c) {
-            std::int32_t* o = &ones[static_cast<std::size_t>(c) * (width_k + 1)];
-            o[0] = 0;
-            for (std::size_t kk = 0; kk < width_k; ++kk) {
-                o[kk + 1] = o[kk] + d.positive[pos_at(i + 1, c) + kk];
-            }
+        const std::size_t next_layers = static_cast<std::size_t>(d.row_layers[i + 1]);
+        ones.assign(next_layers * (width_k + 1), 0);
+        for (std::size_t c = 0; c < next_layers; ++c) {
+            std::int32_t* o = &ones[c * (width_k + 1)];
+            const std::uint8_t* pos =
+                &d.positive[start(i + 1, static_cast<std::int32_t>(c)) * width_k];
+            for (std::size_t kk = 0; kk < width_k; ++kk) o[kk + 1] = o[kk] + pos[kk];
         }
-        for (std::int32_t c = 0; c < layers; ++c) {
+        for (std::int32_t c = 0; c < d.row_layers[i]; ++c) {
             for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
                 double sum = k::log_zero;
                 bool any = false;
                 for (int g = 0; g < v.segs[part]; ++g) {
-                    const std::int32_t a = k::seg_first(v, part, g);
-                    const std::int32_t b = std::min(k::seg_last(v, part, g), kk);
-                    const std::int32_t cn = c + k::seg_step(v, part, g);
-                    if (a > b || cn >= layers) continue;
-                    const double* Pn = P + at(i + 1, cn);
-                    const double* Sn = S + at(i + 1, cn);
+                    std::int32_t a = 0, b = 0, cn = 0;
+                    if (!k::move(v, part, g, kk, c, &a, &b, &cn)) continue;
+                    const double* Pn = P + start(i + 1, cn) * stride;
+                    const double* Sn = S + start(i + 1, cn) * stride;
                     const std::int32_t lo = kk - b, hi = kk - a;
                     const double below = lo > 0 ? Pn[lo - 1] : k::log_zero;
                     const double above = Sn[hi + 1];
@@ -240,23 +237,23 @@ void build_log_table(detail::space_data& d, std::int32_t shifted_total, std::int
                     any = any || o[hi + 1] > o[lo];
                 }
                 count[static_cast<std::size_t>(kk)] = sum;
-                d.positive[pos_at(i, c) + static_cast<std::size_t>(kk)] =
+                d.positive[start(i, c) * width_k + static_cast<std::size_t>(kk)] =
                     any ? std::uint8_t{1} : std::uint8_t{0};
             }
             double run = k::log_zero;
             for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
                 run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
-                P[at(i, c) + static_cast<std::size_t>(kk)] = run;
+                P[start(i, c) * stride + static_cast<std::size_t>(kk)] = run;
             }
             run = k::log_zero;
             for (std::int32_t kk = shifted_total; kk >= 0; --kk) {
                 run = k::log_add(run, count[static_cast<std::size_t>(kk)]);
-                S[at(i, c) + static_cast<std::size_t>(kk)] = run;
+                S[start(i, c) * stride + static_cast<std::size_t>(kk)] = run;
             }
         }
     }
     // log N[0][total][0] = log S[0][0][total], since nothing lies above the total.
-    d.log_size = S[at(0, 0) + static_cast<std::size_t>(shifted_total)];
+    d.log_size = S[start(0, 0) * stride + static_cast<std::size_t>(shifted_total)];
 }
 
 // Splits each part's values into segments (kernel::space_view): below zero,
@@ -292,9 +289,137 @@ void set_segments(detail::space_data& d, bool count_limited) {
     }
 }
 
+// The group arrays of kernel::space_view and the layers of each row. Returns
+// false if some group's limits leave no sum.
+bool set_groups(detail::space_data& d, std::int32_t shifted_total, std::int32_t support_layers) {
+    const std::size_t n = d.cap.size();
+    const std::size_t count = d.groups.size();
+    std::vector<std::size_t> first(count), last(count);
+    std::vector<std::vector<char>> member(count, std::vector<char>(n, char{0}));
+    d.grp_lo.assign(count, 0);
+    d.grp_hi.assign(count, 0);
+    bool feasible = true;
+    for (std::size_t g = 0; g < count; ++g) {
+        const group_limit& gl = d.groups[g];
+        if (gl.parts.empty()) {
+            throw std::invalid_argument("bounded_compositions::space: group " + std::to_string(g) +
+                                        " has no parts");
+        }
+        if (gl.min_sum > gl.max_sum) {
+            throw std::invalid_argument("bounded_compositions::space: group " + std::to_string(g) +
+                                        " has min_sum > max_sum");
+        }
+        std::int64_t lower_sum = 0, cap_sum = 0;
+        first[g] = n;
+        last[g] = 0;
+        for (std::int32_t p : gl.parts) {
+            if (p < 0 || static_cast<std::size_t>(p) >= n) {
+                throw std::invalid_argument("bounded_compositions::space: group " +
+                                            std::to_string(g) + " names part " + std::to_string(p) +
+                                            ", out of range");
+            }
+            const std::size_t u = static_cast<std::size_t>(p);
+            if (member[g][u] != 0) {
+                throw std::invalid_argument("bounded_compositions::space: group " +
+                                            std::to_string(g) + " names part " + std::to_string(p) +
+                                            " twice");
+            }
+            member[g][u] = 1;
+            first[g] = std::min(first[g], u);
+            last[g] = std::max(last[g], u);
+            lower_sum += d.lower[u];
+            cap_sum += d.cap[u];
+        }
+        // Shifted sums: the members' values above their lower bounds.
+        const std::int64_t lo = std::max<std::int64_t>(0, std::int64_t{gl.min_sum} - lower_sum);
+        const std::int64_t hi = std::min<std::int64_t>(
+            {std::int64_t{gl.max_sum} - lower_sum, cap_sum, std::int64_t{shifted_total}});
+        if (hi < lo) feasible = false;
+        d.grp_lo[g] = static_cast<std::int32_t>(std::min<std::int64_t>(lo, shifted_total + 1));
+        d.grp_hi[g] = static_cast<std::int32_t>(std::max<std::int64_t>(hi, -1));
+    }
+
+    // Row j: the groups open before part j, with members on both sides.
+    d.row_open_start.assign(n + 2, 0);
+    d.row_open.clear();
+    d.row_layers.assign(n + 1, 0);
+    d.row_layer_start.assign(n + 1, 0);
+    std::vector<std::vector<std::int32_t>> position(n + 1, std::vector<std::int32_t>(count, -1));
+    std::int64_t entries = 0;
+    for (std::size_t j = 0; j <= n; ++j) {
+        d.row_open_start[j] = static_cast<std::int32_t>(d.row_open.size() / 4);
+        std::int64_t layers = support_layers;
+        for (std::size_t g = 0; g < count; ++g) {
+            if (!(first[g] < j && j <= last[g])) continue;
+            const bool after_member = member[g][j - 1] != 0;
+            const std::int64_t range =
+                after_member ? std::int64_t{shifted_total} + 1 : std::int64_t{d.grp_hi[g]} + 1;
+            position[j][g] = static_cast<std::int32_t>(
+                d.row_open.size() / 4 - static_cast<std::size_t>(d.row_open_start[j]));
+            d.row_open.insert(d.row_open.end(),
+                              {static_cast<std::int32_t>(g), after_member ? 1 : 0,
+                               static_cast<std::int32_t>(std::max<std::int64_t>(range, 1)),
+                               static_cast<std::int32_t>(layers)});
+            layers *= std::max<std::int64_t>(range, 1);
+            if (layers > std::numeric_limits<std::int32_t>::max()) {
+                throw std::length_error(
+                    "bounded_compositions::space: the groups spanning part " + std::to_string(j) +
+                    " need more than 2^31 states; keep each group's parts next to each other");
+            }
+        }
+        d.row_layers[j] = static_cast<std::int32_t>(layers);
+        d.row_layer_start[j] = j == 0 ? 0 : d.row_layer_start[j - 1] + d.row_layers[j - 1];
+        entries += layers * (std::int64_t{shifted_total} + 1);
+        if (entries > max_entries) {
+            throw std::length_error(
+                "bounded_compositions::space: the limits need more than 2^28 table entries; keep "
+                "each group's parts next to each other, or use fewer groups at once");
+        }
+    }
+    d.row_open_start[n + 1] = static_cast<std::int32_t>(d.row_open.size() / 4);
+
+    // Part i: the groups whose span covers it.
+    d.act_start.assign(n + 1, 0);
+    d.act.clear();
+    for (std::size_t i = 0; i < n; ++i) {
+        d.act_start[i] = static_cast<std::int32_t>(d.act.size() / 4);
+        for (std::size_t g = 0; g < count; ++g) {
+            if (!(first[g] <= i && i <= last[g])) continue;
+            const std::int32_t flags =
+                (member[g][i] != 0 ? 1 : 0) | (first[g] == i ? 2 : 0) | (last[g] == i ? 4 : 0);
+            d.act.insert(d.act.end(),
+                         {static_cast<std::int32_t>(g), flags, position[i][g], position[i + 1][g]});
+        }
+    }
+    d.act_start[n] = static_cast<std::int32_t>(d.act.size() / 4);
+    return feasible;
+}
+
+void check_support(const support_limits& support, std::size_t parts) {
+    if (support.min_count < 0 || support.max_count < 0 || support.min_count > support.max_count) {
+        throw std::invalid_argument(
+            "bounded_compositions::space: support counts must satisfy 0 <= min_count <= "
+            "max_count");
+    }
+    if (!support.min_size.empty()) {
+        if (support.min_size.size() != parts) {
+            throw std::invalid_argument(
+                "bounded_compositions::space: min_size needs one value per part");
+        }
+        for (std::int32_t m : support.min_size) {
+            if (m < 1) {
+                throw std::invalid_argument(
+                    "bounded_compositions::space: min_size values must be at least 1");
+            }
+        }
+    }
+}
+
 std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const std::int32_t* lower,
                                                     const std::int32_t* upper, std::size_t parts,
-                                                    const support_limits& support, counting mode) {
+                                                    const support_limits& support,
+                                                    const std::vector<group_limit>& groups,
+                                                    counting mode) {
     if (parts == 0) throw std::invalid_argument("bounded_compositions::space: no parts");
     if (parts > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max() - 1)) {
         throw std::invalid_argument("bounded_compositions::space: too many parts");
@@ -332,32 +457,18 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
     }
     const std::int32_t shifted_total = feasible ? static_cast<std::int32_t>(shifted) : 0;
 
-    if (support.min_count < 0 || support.max_count < 0 || support.min_count > support.max_count) {
-        throw std::invalid_argument(
-            "bounded_compositions::space: support counts must satisfy 0 <= min_count <= "
-            "max_count");
-    }
-    if (!support.min_size.empty()) {
-        if (support.min_size.size() != parts) {
-            throw std::invalid_argument(
-                "bounded_compositions::space: min_size needs one value per part");
-        }
-        for (std::int32_t m : support.min_size) {
-            if (m < 1) {
-                throw std::invalid_argument(
-                    "bounded_compositions::space: min_size values must be at least 1");
-            }
-        }
-    }
+    check_support(support, parts);
     d->support = support;
+    d->groups = groups;
     const std::int32_t n32 = static_cast<std::int32_t>(parts);
     const bool count_limited = support.min_count > 0 || support.max_count < n32;
+    const std::int32_t support_layers = count_limited ? std::min(support.max_count, n32) + 1 : 1;
     set_segments(*d, count_limited);
-    bool plain = !count_limited;
+    if (!set_groups(*d, shifted_total, support_layers)) feasible = false;
+    bool plain = !count_limited && groups.empty();
     for (std::size_t i = 0; i < parts && plain; ++i) {
         plain = d->segs[i] == 1 && d->seg[9 * i] == 0 && d->seg[9 * i + 1] == d->cap[i];
     }
-    const std::int32_t layers = count_limited ? std::min(support.max_count, n32) + 1 : 1;
 
     // cap_suffix[i] = min(shifted_total, cap[i] + ... + cap[n-1]).
     d->cap_suffix.assign(parts + 1, 0);
@@ -370,17 +481,25 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
     k::space_view& v = d->view;
     v.seg = d->seg.data();
     v.segs = d->segs.data();
-    v.layers = layers;
+    v.support_layers = support_layers;
     v.layer_base = 0;
     v.count_min = count_limited ? support.min_count : 0;
     v.count_max =
         count_limited ? std::min(support.max_count, n32) : std::numeric_limits<std::int32_t>::max();
     v.table_k = shifted_total + 1;
     v.plain = plain ? 1 : 0;
+    v.row_layers = d->row_layers.data();
+    v.row_layer_start = d->row_layer_start.data();
+    v.row_open_start = d->row_open_start.data();
+    v.row_open = d->row_open.data();
+    v.act_start = d->act_start.data();
+    v.act = d->act.data();
+    v.grp_lo = d->grp_lo.data();
+    v.grp_hi = d->grp_hi.data();
 
     const bool logarithmic = mode == counting::logarithmic;
     if (feasible && logarithmic) {
-        build_log_table(*d, shifted_total, layers);
+        build_log_table(*d, shifted_total);
         if (k::log_is_zero(d->log_size)) {  // the limits leave nothing
             feasible = false;
             d->log_size = -std::numeric_limits<double>::infinity();
@@ -390,7 +509,7 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
         }
     }
     if (feasible && !logarithmic) {
-        build_table(*d, shifted_total, layers);
+        build_table(*d, shifted_total);
         if (d->size.is_zero()) {  // the limits leave nothing
             feasible = false;
             std::vector<k::limb>().swap(d->table);
@@ -432,39 +551,66 @@ void check_length(std::size_t got, std::size_t want) {
     }
 }
 
+void check_same_length(std::size_t lower, std::size_t upper) {
+    if (lower != upper) {
+        throw std::invalid_argument(
+            "bounded_compositions::space: lower and upper differ in length");
+    }
+}
+
+// A limit shifted by what the prefix already holds, saturating at the
+// int32 range so that an absent limit stays absent.
+std::int32_t shift_limit(std::int32_t limit, std::int64_t taken) {
+    if (limit == std::numeric_limits<std::int32_t>::min() ||
+        limit == std::numeric_limits<std::int32_t>::max()) {
+        return limit;
+    }
+    const std::int64_t out = std::int64_t{limit} - taken;
+    return static_cast<std::int32_t>(
+        std::clamp<std::int64_t>(out, std::numeric_limits<std::int32_t>::min() + std::int64_t{1},
+                                 std::numeric_limits<std::int32_t>::max() - std::int64_t{1}));
+}
+
 }  // namespace
 
 space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
              const std::vector<std::int32_t>& upper, counting mode) {
-    if (lower.size() != upper.size()) {
-        throw std::invalid_argument(
-            "bounded_compositions::space: lower and upper differ in length");
-    }
-    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support_limits{}, mode);
+    check_same_length(lower.size(), upper.size());
+    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support_limits{}, {}, mode);
 }
 
 space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
              std::size_t parts, counting mode)
-    : data_(make_data(total, lower, upper, parts, support_limits{}, mode)) {}
+    : data_(make_data(total, lower, upper, parts, support_limits{}, {}, mode)) {}
 
 space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
              const std::vector<std::int32_t>& upper, const support_limits& support, counting mode) {
-    if (lower.size() != upper.size()) {
-        throw std::invalid_argument(
-            "bounded_compositions::space: lower and upper differ in length");
-    }
-    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, mode);
+    check_same_length(lower.size(), upper.size());
+    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, {}, mode);
 }
 
 space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
              std::size_t parts, const support_limits& support, counting mode)
-    : data_(make_data(total, lower, upper, parts, support, mode)) {}
+    : data_(make_data(total, lower, upper, parts, support, {}, mode)) {}
+
+space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
+             const std::vector<std::int32_t>& upper, const support_limits& support,
+             const std::vector<group_limit>& groups, counting mode) {
+    check_same_length(lower.size(), upper.size());
+    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, groups, mode);
+}
+
+space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
+             std::size_t parts, const support_limits& support,
+             const std::vector<group_limit>& groups, counting mode)
+    : data_(make_data(total, lower, upper, parts, support, groups, mode)) {}
 
 std::size_t space::parts() const noexcept { return data_->lower.size(); }
 std::int32_t space::total() const noexcept { return data_->total; }
 const std::vector<std::int32_t>& space::lower() const noexcept { return data_->lower; }
 const std::vector<std::int32_t>& space::upper() const noexcept { return data_->upper; }
 const support_limits& space::support() const noexcept { return data_->support; }
+const std::vector<group_limit>& space::groups() const noexcept { return data_->groups; }
 counting space::counting_mode() const noexcept { return data_->mode; }
 
 const natural& space::size() const {
@@ -500,16 +646,17 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
     std::int64_t prefix_sum = 0;
     for (std::size_t i = 0; i < d; ++i) {
         const std::int64_t y = static_cast<std::int64_t>(prefix[i]) - v.lo[i];
-        const std::int32_t step = y < 0 || y > v.cap[i] ? -1
-                                                        : k::step_of(v, static_cast<int>(i),
-                                                                     static_cast<std::int32_t>(y));
-        if (step < 0 || y > left) {
+        const std::int32_t next =
+            y < 0 || y > v.cap[i] || y > left
+                ? -1
+                : k::layer_after(v, static_cast<int>(i), left, layer, static_cast<std::int32_t>(y));
+        if (next < 0) {
             throw std::invalid_argument("bounded_compositions::space::subspace: prefix value " +
                                         std::to_string(prefix[i]) + " at part " +
                                         std::to_string(i) + " is out of range");
         }
         left -= static_cast<std::int32_t>(y);
-        layer += step;
+        layer = next;
         if (prefix[i] != 0) ++nonzero;
         prefix_sum += prefix[i];
     }
@@ -522,68 +669,66 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
         rest.min_size.erase(rest.min_size.begin(),
                             rest.min_size.begin() + static_cast<std::ptrdiff_t>(d));
     }
+    std::vector<group_limit> rest_groups;
+    for (const group_limit& gl : data_->groups) {
+        group_limit out;
+        std::int64_t taken = 0;
+        for (std::int32_t p : gl.parts) {
+            if (static_cast<std::size_t>(p) < d) {
+                taken += prefix[static_cast<std::size_t>(p)];
+            } else {
+                out.parts.push_back(p - static_cast<std::int32_t>(d));
+            }
+        }
+        if (out.parts.empty()) continue;
+        out.min_sum = shift_limit(gl.min_sum, taken);
+        out.max_sum = shift_limit(gl.max_sum, taken);
+        rest_groups.push_back(std::move(out));
+    }
+
+    auto sub = std::make_shared<detail::space_data>();
+    sub->parent = data_;
+    sub->mode = data_->mode;
+    sub->total = static_cast<std::int32_t>(data_->total - prefix_sum);
+    sub->lower.assign(data_->lower.begin() + static_cast<std::ptrdiff_t>(d), data_->lower.end());
+    sub->upper.assign(data_->upper.begin() + static_cast<std::ptrdiff_t>(d), data_->upper.end());
+    sub->support = rest;
+    sub->groups = std::move(rest_groups);
+    k::space_view& sv = sub->view;
+    sv = v;  // same tables; rows and parts shifted by d
+    sv.seg = v.seg + 9 * d;
+    sv.segs = v.segs + d;
+    sv.lo = v.lo + d;
+    sv.cap = v.cap + d;
+    sv.cap_suffix = v.cap_suffix + d;
+    sv.row_layers = v.row_layers + d;
+    sv.row_layer_start = v.row_layer_start + d;
+    sv.row_open_start = v.row_open_start + d;
+    sv.act_start = v.act_start + d;
+    sv.layer_base = layer;
+    sv.n = static_cast<std::int32_t>(n - d);
+    sv.total = left;
     if (data_->mode == counting::logarithmic) {
         const double log_count = k::log_window(v, row, layer, left, left, nullptr);
-        if (k::log_is_zero(log_count)) {
+        if (!k::has_completion(v, row, layer, left)) {
             throw std::invalid_argument(
                 "bounded_compositions::space::subspace: prefix has no completion");
         }
-        auto sub = std::make_shared<detail::space_data>();
-        sub->parent = data_;
-        sub->mode = counting::logarithmic;
-        sub->total = static_cast<std::int32_t>(data_->total - prefix_sum);
-        sub->lower.assign(data_->lower.begin() + static_cast<std::ptrdiff_t>(d),
-                          data_->lower.end());
-        sub->upper.assign(data_->upper.begin() + static_cast<std::ptrdiff_t>(d),
-                          data_->upper.end());
         sub->log_size = log_count;
-        sub->support = rest;
-        k::space_view& sv = sub->view;
-        sv = v;  // same tables; rows and parts shifted by d
-        sv.seg = v.seg + 9 * d;
-        sv.segs = v.segs + d;
-        sv.lo = v.lo + d;
-        sv.cap = v.cap + d;
-        sv.cap_suffix = v.cap_suffix + d;
-        const std::int64_t skip = static_cast<std::int64_t>(d) * v.layers * v.log_stride;
-        sv.log_prefix = v.log_prefix + skip;
-        sv.log_suffix = v.log_suffix + skip;
-        sv.positive = v.positive + static_cast<std::int64_t>(d) * v.layers * v.table_k;
-        sv.layer_base = layer;
-        sv.n = static_cast<std::int32_t>(n - d);
-        sv.total = left;
         return space(std::move(sub));
     }
     // size = N[d][left][layer]
     std::vector<k::limb> count(static_cast<std::size_t>(v.row_limbs[row]));
     k::completions(v, row, layer, left, count.data());
-    natural size = natural::from_limbs(count.data(), count.size());
-    if (size.is_zero()) {
+    sub->size = natural::from_limbs(count.data(), count.size());
+    if (sub->size.is_zero()) {
         throw std::invalid_argument(
             "bounded_compositions::space::subspace: prefix has no completion");
     }
-
-    auto sub = std::make_shared<detail::space_data>();
-    sub->parent = data_;
-    sub->total = static_cast<std::int32_t>(data_->total - prefix_sum);
-    sub->lower.assign(data_->lower.begin() + static_cast<std::ptrdiff_t>(d), data_->lower.end());
-    sub->upper.assign(data_->upper.begin() + static_cast<std::ptrdiff_t>(d), data_->upper.end());
-    sub->size = std::move(size);
-    sub->support = rest;
-    k::space_view& sv = sub->view;
-    sv = v;  // same table; rows and parts shifted by d
-    sv.seg = v.seg + 9 * d;
-    sv.segs = v.segs + d;
-    sv.layer_base = layer;
     sv.row_offset = v.row_offset + d;
     sv.row_limbs = v.row_limbs + d;
-    sv.lo = v.lo + d;
-    sv.cap = v.cap + d;
-    sv.cap_suffix = v.cap_suffix + d;
     sv.size = sub->size.limbs();
     sv.size_limbs = static_cast<std::int32_t>(sub->size.limb_count());
-    sv.n = static_cast<std::int32_t>(n - d);
-    sv.total = left;
     sub->log_size = log_of(sub->size);
     return space(std::move(sub));
 }
@@ -633,7 +778,9 @@ bool space::first(std::int32_t* out) const noexcept {
 }
 
 bool space::next(std::int32_t* x) const noexcept {
-    return k::next(data_->view, x) == k::status::ok;
+    if (data_->view.plain != 0) return k::next(data_->view, x, nullptr) == k::status::ok;
+    std::vector<std::int32_t> scratch(parts());
+    return k::next(data_->view, x, scratch.data()) == k::status::ok;
 }
 
 }  // namespace bounded_compositions

@@ -103,7 +103,26 @@ void check_space(reader& in) {
             for (auto& m : sup.min_size) m = 1 + in.byte() % 4;
         }
     }
-    const bounded_compositions::space s(total, lo, hi, sup);
+    // Group limits on about half the inputs: one or two groups of any parts.
+    std::vector<bounded_compositions::group_limit> groups;
+    if (in.byte() % 2 == 1) {
+        const int count = 1 + in.byte() % 2;
+        for (int g = 0; g < count; ++g) {
+            bounded_compositions::group_limit gl;
+            const std::uint8_t mask = in.byte();
+            for (std::size_t i = 0; i < n; ++i) {
+                if (((static_cast<unsigned>(mask) >> i) & 1u) != 0) {
+                    gl.parts.push_back(static_cast<std::int32_t>(i));
+                }
+            }
+            if (gl.parts.empty()) gl.parts.push_back(0);
+            const std::int32_t from = static_cast<std::int32_t>(in.byte() % 25) - 8;
+            if (in.byte() % 3 != 0) gl.min_sum = from;
+            if (in.byte() % 3 != 0) gl.max_sum = from + in.byte() % 12;
+            groups.push_back(gl);
+        }
+    }
+    const bounded_compositions::space s(total, lo, hi, sup, groups);
     if (s.size() > natural(20000)) return;  // keep each input fast
 
     // The size against a count over the box.
@@ -119,6 +138,11 @@ void check_space(reader& in) {
                 if (y[i] == 0) continue;
                 ++nonzero;
                 if (!sup.min_size.empty() && std::abs(y[i]) < sup.min_size[i]) ok = false;
+            }
+            for (const auto& g : groups) {
+                std::int64_t part_sum = 0;
+                for (std::int32_t p : g.parts) part_sum += y[static_cast<std::size_t>(p)];
+                if (part_sum < g.min_sum || part_sum > g.max_sum) ok = false;
             }
             if (ok && sum == total && nonzero >= sup.min_count && nonzero <= sup.max_count) ++brute;
             std::size_t i = 0;
@@ -243,7 +267,7 @@ void check_space(reader& in) {
 
     // The logarithmic mode: same emptiness, close sizes, valid decodes, and
     // encode inverts decode, with the same support limits.
-    const bounded_compositions::space logs(total, lo, hi, sup,
+    const bounded_compositions::space logs(total, lo, hi, sup, groups,
                                            bounded_compositions::counting::logarithmic);
     expect(!logs.empty(), "logarithmic space is non-empty too");
     expect(std::abs(logs.log_size() - s.log_size()) <= 1e-11 * std::max(1.0, s.log_size()),
