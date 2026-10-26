@@ -11,6 +11,8 @@ threads = dependency('threads')
 bounded_compositions_kernel_dep = declare_dependency(include_directories: inc)
 
 bounded_compositions_lib = library('bounded_compositions',
+  'src/natural.cpp',
+  'src/space.cpp',
   'src/version.cpp',
   include_directories: inc,
   dependencies: threads,
@@ -33,8 +35,22 @@ if not meson.is_subproject()
   endif
   if catch2.found()
     tests = executable('bounded_compositions_tests',
+      'tests/test_limbs.cpp',
+      'tests/test_natural.cpp',
       'tests/test_smoke.cpp',
+      'tests/test_space.cpp',
       dependencies: [bounded_compositions_dep, catch2])
-    test('bounded_compositions_tests', tests)
+    test('bounded_compositions_tests', tests, timeout: 300)
+    limit_tests = executable('bounded_compositions_limit_tests',
+      'tests/test_limits.cpp', 'src/natural.cpp', 'src/space.cpp', 'src/version.cpp',
+      include_directories: inc,
+      cpp_args: ['-DBCOMP_MAX_LIMBS=2',
+                 '-DBCOMP_VERSION_STRING="' + meson.project_version() + '"'],
+      dependencies: [threads, catch2])
+    test('bounded_compositions_limit_tests', limit_tests)
+    fuzz_smoke = executable('bounded_compositions_fuzz_smoke',
+      'tests/fuzz/fuzz_properties.cpp', 'tests/fuzz/fuzz_driver.cpp',
+      dependencies: bounded_compositions_dep)
+    test('fuzz_smoke', fuzz_smoke, timeout: 300)
   endif
 endif

@@ -15,14 +15,43 @@ endif()
 include(Catch)
 
 add_executable(bounded_compositions_tests
-  test_smoke.cpp)
+  test_limbs.cpp
+  test_natural.cpp
+  test_smoke.cpp
+  test_space.cpp)
 target_link_libraries(bounded_compositions_tests
   PRIVATE bounded_compositions::bounded_compositions Catch2::Catch2WithMain bounded_compositions_warnings)
 catch_discover_tests(bounded_compositions_tests)
+
+# The library rebuilt with a two-limb kernel budget, so the limit is testable
+# with small tables.
+add_executable(bounded_compositions_limit_tests
+  test_limits.cpp
+  ${PROJECT_SOURCE_DIR}/src/natural.cpp
+  ${PROJECT_SOURCE_DIR}/src/space.cpp
+  ${PROJECT_SOURCE_DIR}/src/version.cpp)
+target_compile_definitions(bounded_compositions_limit_tests PRIVATE
+  BCOMP_MAX_LIMBS=2 BCOMP_VERSION_STRING="${PROJECT_VERSION}")
+target_link_libraries(bounded_compositions_limit_tests
+  PRIVATE bounded_compositions_kernel Threads::Threads Catch2::Catch2WithMain bounded_compositions_warnings)
+catch_discover_tests(bounded_compositions_limit_tests TEST_PREFIX "limit: ")
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
   add_test(NAME kernel_rules
     COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/tools/check_kernel.py
             ${PROJECT_SOURCE_DIR}/include/bounded_compositions/kernel)
+endif()
+
+# Fuzz properties: a seeded smoke run everywhere, real libFuzzer with Clang.
+option(BCOMP_FUZZ "Build the libFuzzer target (Clang only)" OFF)
+if(BCOMP_FUZZ)
+  add_executable(bounded_compositions_fuzz fuzz/fuzz_properties.cpp)
+  target_compile_options(bounded_compositions_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_link_options(bounded_compositions_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_link_libraries(bounded_compositions_fuzz PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
+else()
+  add_executable(bounded_compositions_fuzz_smoke fuzz/fuzz_properties.cpp fuzz/fuzz_driver.cpp)
+  target_link_libraries(bounded_compositions_fuzz_smoke PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
+  add_test(NAME fuzz_smoke COMMAND bounded_compositions_fuzz_smoke)
 endif()
