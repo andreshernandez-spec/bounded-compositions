@@ -84,7 +84,7 @@ void check_natural(reader& in) {
 }
 
 void check_space(reader& in) {
-    const std::size_t n = 1 + in.byte() % 6;
+    const std::size_t n = 1 + static_cast<std::size_t>(in.byte() % 6);
     std::vector<std::int32_t> lo(n), hi(n);
     for (std::size_t i = 0; i < n; ++i) {
         lo[i] = static_cast<std::int32_t>(in.byte() % 9) - 4;
