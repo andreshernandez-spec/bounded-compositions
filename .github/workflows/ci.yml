@@ -148,6 +148,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Build and install
-        run: python -m pip install ".[test]"
+        # optunahub only for the OptunaHub package's test; its dependencies
+        # (cryptography) are left out of the wheels' test environments.
+        run: python -m pip install ".[test]" optunahub
       - name: Test
         run: python -m pytest -q
