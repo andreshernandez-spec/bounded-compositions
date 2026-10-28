@@ -51,6 +51,17 @@ def test_filter_counts_and_hands_out_what_passes(small):
     assert (f.accepted, f.rejected) == (len(passing), len(xs) - len(passing))
 
 
+def test_coordinate_source_when_the_table_is_wider_than_the_size():
+    # The size takes 60 bits; row 0 of the table holds prefix sums over every
+    # total up to 207, which take 65.
+    s = bc.Space(207, [0] * 12, [207] * 12)
+    assert s.size < 2**64
+    v = bc.VisitedSet(s)
+    pts = bc.FreshSampler(bc.coordinate_sequence(s, seed=3), v).take(1000)
+    assert len({tuple(x) for x in pts.tolist()}) == 1000 == len(v)
+    assert all(v.contains(x) for x in pts)
+
+
 def test_filter_errors_propagate(small):
     def boom(_):
         raise KeyError("from the filter")
