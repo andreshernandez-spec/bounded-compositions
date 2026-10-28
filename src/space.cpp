@@ -111,26 +111,46 @@ void build_table(detail::space_data& d, std::int32_t shifted_total) {
         };
         std::vector<k::limb> row(layers * width_k * uc, 0);
         count.assign(uc, 0);
-        for (std::int32_t c = 0; c < d.row_layers[i]; ++c) {
+        if (v.plain != 0) {
+            // One layer and one segment 0..cap: N[i][kk] = P[i+1][kk] - P[i+1][kk - cap - 1].
+            const std::int32_t cap = d.cap[i];
             for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
-                // N[i][kk][c]: over each segment's allowed values [a, b],
-                // P[i+1][cn][kk - a] - P[i+1][cn][kk - b - 1].
-                k::limbs_zero(count.data(), wc);
-                for (int g = 0; g < v.segs[part]; ++g) {
-                    std::int32_t a = 0, b = 0, cn = 0;
-                    if (!k::move(v, part, g, kk, c, &a, &b, &cn)) continue;
-                    k::limbs_add(count.data(), wc, at(cn, kk - a), wn, count.data(), wc);
-                    if (kk - b - 1 >= 0) {
-                        k::limbs_sub(count.data(), wc, at(cn, kk - b - 1), wn, count.data(), wc);
-                    }
+                const std::int32_t j = kk - cap - 1;
+                if (j < 0) {
+                    k::limbs_copy(at(0, kk), wn, count.data(), wc);
+                } else {
+                    k::limbs_sub(at(0, kk), wn, at(0, j), wn, count.data(), wc);
                 }
-                k::limb* out =
-                    &row[(static_cast<std::size_t>(c) * width_k + static_cast<std::size_t>(kk)) *
-                         uc];
+                k::limb* out = &row[static_cast<std::size_t>(kk) * uc];
                 if (kk == 0) {
                     k::limbs_copy(count.data(), wc, out, wc);
                 } else {
                     k::limbs_add(out - wc, wc, count.data(), wc, out, wc);
+                }
+            }
+        } else {
+            for (std::int32_t c = 0; c < d.row_layers[i]; ++c) {
+                for (std::int32_t kk = 0; kk <= shifted_total; ++kk) {
+                    // N[i][kk][c]: over each segment's allowed values [a, b],
+                    // P[i+1][cn][kk - a] - P[i+1][cn][kk - b - 1].
+                    k::limbs_zero(count.data(), wc);
+                    for (int g = 0; g < v.segs[part]; ++g) {
+                        std::int32_t a = 0, b = 0, cn = 0;
+                        if (!k::move(v, part, g, kk, c, &a, &b, &cn)) continue;
+                        k::limbs_add(count.data(), wc, at(cn, kk - a), wn, count.data(), wc);
+                        if (kk - b - 1 >= 0) {
+                            k::limbs_sub(count.data(), wc, at(cn, kk - b - 1), wn, count.data(),
+                                         wc);
+                        }
+                    }
+                    k::limb* out = &row[(static_cast<std::size_t>(c) * width_k +
+                                         static_cast<std::size_t>(kk)) *
+                                        uc];
+                    if (kk == 0) {
+                        k::limbs_copy(count.data(), wc, out, wc);
+                    } else {
+                        k::limbs_add(out - wc, wc, count.data(), wc, out, wc);
+                    }
                 }
             }
         }

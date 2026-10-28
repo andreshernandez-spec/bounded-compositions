@@ -1,9 +1,10 @@
 # Sampling report
 
 This report documents how the library samples bounded compositions, why each
-method behaves as it does, and how it measures. It closes phase 1: sampling is
-to be understood, validated and signed off before any optimisation is built on
-it.
+method behaves as it does, and how it measures. Sections 1 to 5 close phase 1:
+sampling is to be understood, validated and signed off before any optimisation
+is built on it. Section 6 covers the limits added in phase 2, still for
+sampling only.
 
 Measurements were taken on: {{machine}}. Timings depend on the machine and
 vary between sessions on it (they are medians within one session); the spread
@@ -13,7 +14,8 @@ results are deterministic.
 
 - A **space** is the set of integer vectors `x` with `x[0] + ... + x[n-1] = K`
   and `lower[i] <= x[i] <= upper[i]`. Its **size** is the number of such vectors,
-  its **compositions**.
+  its **compositions**. Section 6 adds limits on the nonzero parts and on the
+  sums of groups of parts.
 - The **rank** of a composition is its position in lexicographic order, first
   part slowest, counting from 0.
 - A **region** is an interval of ranks. A **subtree** is the region of the
@@ -139,7 +141,7 @@ evenly spaced ranks, close to this mapping's first `2^k` points, then this
 mapping from index `2^k + 1` on, with the second pass sized from the share of
 first-pass points that were accepted. `rank_sequence` does both passes as one
 sequence: its first `2^j` points are an even grid and later points continue
-it. The scaled mapping is kept for comparison only (section 7).
+it. The scaled mapping is kept for comparison only (section 8).
 
 For `i < 2^j <= size`, the values `phi(i)` are the multiples of `2^-j`, at
 least `size / 2^j >= 1` ranks apart after scaling, so the first
@@ -316,8 +318,9 @@ nothing but the read-only table and an atomic block counter.
 
 The exact table grows as `n K` entries times the limb width of the counts. At
 1000 parts with total 1000 it takes {{mib_exact_1000}} MiB, against
-{{mib_log_1000}} MiB in the logarithmic mode, which stores two doubles per
-entry.
+{{mib_log_1000}} MiB in the logarithmic mode, which stores two doubles and a
+byte per entry (the byte marks the entries with completions, which rounded
+logarithms cannot tell from zero).
 
 ### 5.3 Single operations (100-part space)
 
@@ -329,7 +332,201 @@ because it binary-searches each coordinate with a heap allocation per step.
 It is called once per point handed back from an optimiser; an allocation-free
 version is possible if it becomes a bottleneck.
 
-## 6. Limits and caveats
+## 6. Constrained spaces
+
+Phase 2 adds limits beyond the bounds. The ones in section 6.1 are counted
+exactly, by an extension of section 2, so what sections 3 to 5 describe works
+on a constrained space too: sizes, ranks, regions, every sequence,
+`fresh_sampler` and the logarithmic mode. Limits the
+table does not count go through a filter (section 6.4), and `repair` (section
+6.5) moves a point from outside the space to the nearest one inside.
+
+### 6.1 Limits
+
+| limit | a composition is kept when | given by |
+|---|---|---|
+| nonzero count | `min_count <= #{i : x[i] != 0} <= max_count` | `support_limits` |
+| semicontinuous parts | `x[i] == 0` or `abs(x[i]) >= min_size[i]` | `support_limits` |
+| group sums | `min_sum <= sum of x[i] over the group's parts <= max_sum` | `group_limit`, any number of them |
+
+A group can be any set of parts: groups can be disjoint, nested, or crossing
+(overlapping without one holding the other), and a group's parts need not be
+adjacent. Compositions stay in lexicographic order of the parts (section 8),
+so a subtree is still a contiguous region, and `subspace` gives the remaining
+parts as a space with the limits left for them.
+
+### 6.2 Counting with layers
+
+In section 2 the completions of parts `i..n-1` depend only on `k`, what is
+left to place. Under these limits they also depend on the parts already
+placed, so each row gets **layers**, one for each state the walk has to
+remember, and the count becomes `N[i][c][k]` for layer `c`:
+
+- *Nonzero count:* the number of nonzero parts so far, from 0 to
+  `min(max_count, n)`. Row `n` counts 1 only in the layers from `min_count` to
+  `max_count`.
+- *Semicontinuous parts:* no state, but part `i`'s values split into up to
+  three **segments**: the negative values up to `-min_size[i]`, zero, and the
+  positive values from `min_size[i]`. With a nonzero count, the two nonzero
+  segments add one to it.
+- *Groups:* a group is **open** at row `j` when it has members both before
+  part `j` and from part `j` on. Each open group adds a coordinate to the
+  layer: `r`, the group's sum so far above its members' lower bounds, or
+  `r + k` when part `j - 1` is a member.
+
+The second form is what keeps the prefix sums of section 2 usable. All
+values `y` of one segment of part `i` lead to the same layer of row `i + 1`:
+the nonzero count moves the same way for the whole segment, a member's value
+turns `(r, k)` into `(r + y, k - y)`, whose sum `r + k` does not depend on
+`y`, and a part outside the group leaves `r` alone. So
+
+    N[i][c][k] = sum over the segments s of part i, and y from a_s to b_s, of N[i+1][c_s][k - y],
+
+where `[a_s, b_s]` are the values segment `s` allows from `(c, k)` and `c_s`
+is the layer they lead to. Each segment's term is one window of the prefix
+sums of row `i + 1` in one layer, as in section 2: rank adds one window per
+part, and unranking picks a segment, then searches inside it. A group's limits
+only narrow `[a_s, b_s]`: a member can add at most `max_sum - r` (in shifted
+terms), and the group's last member must bring it to at least `min_sum`.
+
+**Cost.** Each layer of a row holds `K + 1` entries, `K` being the total less
+the lower bounds. The layers of a row are a product of factors:
+`min(max_count, n) + 1` for the nonzero count, and for each open group `K + 1`
+if the part before is a member, or the group's largest shifted sum plus 1 if it
+is not. Groups of adjacent parts that do not overlap are open one at a time, so
+they cost one factor per row; nested and crossing groups are open together,
+and their factors multiply. Construction refuses tables of more than 2^28
+entries.
+
+Measured on {{limited_parts}} parts summing to {{limited_total}}, each
+`0..{{limited_cap}}`, under each kind of limit (sizes rounded; build times
+are the median of {{limited_build_runs}}):
+
+{{table_limited}}
+
+The nonzero count multiplies the layers by its range, {{count_range}}, and
+semicontinuous parts add nothing to the table. Groups of adjacent parts give
+{{layers_groups}} layers (`K + 1`) and {{mib_groups}} MiB. Nesting them in two
+halves multiplies two such factors: {{layers_nested}} layers, {{mib_nested}}
+MiB, {{ms_build_nested}} ms to build. The crossing pair reaches
+{{layers_crossing}} layers where both are open, {{mib_crossing}} MiB in all.
+The logarithmic tables store two doubles and a byte per entry and grow the
+same way.
+
+Single operations, microseconds per call (repair targets drawn uniformly per
+part from 0 to twice the average part):
+
+{{table_limited_ops}}
+
+Unranking takes at most {{unrank_ratio_max}} times as long as without limits:
+its search runs inside one layer whatever the number of layers, and the extra
+work is choosing a segment and finding the next layer, part by part.
+
+### 6.3 Sampling
+
+The sequences need nothing new. A rank sequence lists ranks, so the gap bound
+of section 3.1 holds on a constrained space as on any other, and so do exact
+region splits and resuming. The decoder gives each part's allowed values their
+exact conditional shares, segment by segment, so the coordinate sequence's
+first part keeps its bound of section 3.3. Independent draws pick a uniform
+rank, so they stay exactly uniform.
+
+On the spaces of section 6.2 at N = {{limited_n}} (exact marginals propagated
+through the layers of the logarithmic tables, and checked against exact
+subtree counts for the first and last parts):
+
+*Largest rank gap times N / size*
+
+{{table_limited_gap}}
+
+*Largest marginal error*
+
+{{table_limited_marginal}}
+
+The rank sequences stay below 2 at every measured N, worst
+{{limited_worst_gap_rank}}. The coordinate sequence has the smallest marginal
+error on every space, as on the spaces of section 4, and its first part stays
+within two points of the exact counts at every power-of-two N (at most
+{{limited_first_part_points}} points).
+
+### 6.4 Rejection: limits the table does not count
+
+Other limits, such as a weighted sum, go through a filter:
+`bool accept(void* context, const int32_t* x)`. `fresh_sampler` draws from its
+sequence as in section 3.5, drops visited points, calls the filter on the
+rest (on the executor's threads) and hands out the accepted ones in sequence
+order. Rejected points are counted and not marked visited, so a sampler on a
+region measures that region's **acceptance**,
+`accepted() / (accepted() + rejected())`.
+
+Independent draws that pass the filter are uniform on what it accepts. Rank
+and coordinate sequences spread their draws, not the accepted points: where
+acceptance varies inside a region, the accepted points follow it.
+
+**Acceptance by region.** On the {{accept_space_parts}}-part space of section 4
+the filter `{{accept_filter}}` accepts {{accept_whole}} of the space, and from
+{{accept_min}} to {{accept_max}} of each of its {{accept_subtrees}} subtrees
+by first part. Each subtree's acceptance was estimated from the first points
+of its sequences, with {{accept_seeds}} seeds each, and compared with the exact
+acceptance from enumerating the subtree. Root-mean-square error over all
+subtrees and seeds:
+
+![Exact acceptance of each subtree, and the error of its estimates](sampling/acceptance.png)
+
+{{table_acceptance}}
+
+Independent draws follow the binomial error `sqrt(p (1 - p) / D)` for `D`
+draws, as they should. At {{accept_top_draws}} points the rank sequence's
+error is {{accept_rank_gain}} times smaller and the coordinate sequence's
+{{accept_coord_gain}} times.
+
+**Exhaustion.** A `fresh_sampler` with the filter `{{ff_filter}}` on the subtree
+{{ff_prefix}} of the {{parts_small}}-part space ({{ff_size}} compositions), after the space's
+first {{ff_first}} points were marked visited, {{ff_inside}} of them inside the
+subtree. Enumeration finds {{ff_new_accepted}} new points that pass and
+{{ff_new_rejected}} that do not:
+
+{{table_fresh_filter}}
+
+Every source handed out exactly the {{ff_new_accepted}} points that pass, each
+once. The rank sequence drew each of the subtree's other points once:
+{{ff_inside}} visited and {{ff_new_rejected}} rejected. Coordinate and
+independent draws repeat points, so they drew the same rejected and visited
+points many times before the patience rule of section 3.5 moved them to the
+subtree's rank sequence.
+
+The filter runs on every new point drawn, so a region with acceptance `p` costs
+about `1 / p` draws per point. `take` stops only when it has its count or the
+region is used up, so a region with nothing acceptable left is drawn in full.
+
+### 6.5 Repair
+
+`repair(s, z)` gives the composition of `s` nearest to a real vector `z` in
+squared distance, `sum over i of (x[i] - z[i])^2`, with ties going to the
+composition first in rank order. Optimisers that move through real vectors
+(evolution strategies, CMA-ES) can use it to bring their candidates back into
+the space.
+
+- *Bounds only:* start from the lower bounds and add the `K` units one at a
+  time, each to the part where it adds least to the distance. Part `i`'s next
+  unit adds `2 (x[i] - z[i]) + 1`, which grows with `x[i]`, so the distance is
+  separable and convex in the parts, and for such sums this greedy allocation
+  is optimal (T. Ibaraki and N. Katoh, *Resource Allocation Problems:
+  Algorithmic Approaches*, MIT Press, 1988). With a heap it takes
+  `O(K log n)`.
+- *With limits:* a shortest path over the states of the table,
+  `D[i][c][k] = min over allowed y of (lower[i] + y - z[i])^2 + D[i+1][c_y][k - y]`,
+  then forward from the first part, each part taking the smallest value that
+  keeps the least distance, which gives the first optimum in rank order. It
+  visits every state once for each value a part can take, and holds a double
+  per state, up to 2^27 states.
+
+In the table of section 6.2, repair takes {{us_repair_base}} microseconds
+without limits. With limits it takes from {{ms_repair_min}} ms
+({{repair_min_name}}) to {{ms_repair_max}} ms ({{repair_max_name}}). The tests
+check both methods against brute force, ties included.
+
+## 7. Limits and caveats
 
 - **Size limit of exact counting:** counts above `BCOMP_MAX_LIMBS` limbs (default
   64, 4096 bits) are rejected at construction. The logarithmic mode has no
@@ -351,8 +548,20 @@ version is possible if it becomes a bottleneck.
   resume without stored state. Anything else needs a `visited_set`, which
   keeps every evaluated rank: 8 bytes per 64 bits of rank, in tables kept at
   most half full.
+- **Table size with groups:** each open group multiplies a row's layers by up
+  to `K + 1`, and nested or crossing groups are open together (section 6.2):
+  the nested example of section 6.2 takes {{mib_nested}} MiB. Keeping each
+  group's parts adjacent keeps one group open at a time. Tables over 2^28
+  entries are refused.
+- **Repair with limits:** a state search of {{ms_repair_min}} ms to
+  {{ms_repair_max}} ms per call on the spaces of section 6.2, slow for a
+  population repaired at every step. It is to be made faster before the optimisers of phase 4 rely on it.
+- **Rejection:** about `1 / p` draws per accepted point at acceptance `p`, and
+  a region with nothing acceptable left is drawn in full before `take`
+  returns. The spread of rank and coordinate sequences holds for the draws,
+  not for the accepted points (section 6.4).
 
-## 7. Decisions
+## 8. Decisions
 
 1. **Default sequence:** `rank_sequence`, for its coverage, lack of repeats and
    exact region splits. The scrambled `coordinate_sequence` is the alternative
@@ -363,8 +572,14 @@ version is possible if it becomes a bottleneck.
    with no regions or scrambling, and nothing else in the library uses it.
 4. **`encode` speed:** acceptable for now (section 5.3), to be optimised when an
    optimiser needs it.
+5. **Order with group limits:** compositions stay in lexicographic order of
+   the parts, and groups are counted along it (section 6.2). The alternative,
+   group totals first and then the parts inside each group, would make nested
+   groups cheap at any depth. But compositions that share their leading parts
+   would no longer be contiguous in rank, so subtrees, `subspace`, resuming
+   and the visited set would each need a second, group-aware form.
 
-## 8. Reproducing
+## 9. Reproducing
 
 ```sh
 cmake --preset release -DBCOMP_BUILD_BENCH=ON

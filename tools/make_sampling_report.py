@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 # Reference palette, first four categorical slots (validated light mode).
 SERIES = {
@@ -161,6 +162,101 @@ def figure_threads(records, path):
     label_ends(fig, ax, lines)
     fig.savefig(path, dpi=150, facecolor=SURFACE)
     plt.close(fig)
+
+
+ACCEPT_SERIES = (("rank_scrambled", "rank"), ("coordinate_scrambled", "coordinate_scrambled"), ("iid", "iid"))
+
+
+def acceptance_rms(acc):
+    """Root-mean-square error of the acceptance estimates over every subtree
+    and seed, by sequence and number of draws; and the binomial value that
+    independent draws should give."""
+    subs = acc["subtrees"]
+    exact = [s["accepted"] / s["size"] for s in subs]
+    rms = {}
+    for seq, _ in ACCEPT_SERIES:
+        for di, d in enumerate(acc["draws"]):
+            err = [reps[di] / d - e for s, e in zip(subs, exact) for reps in s["estimates"][seq]]
+            if len(err) != len(subs) * acc["seeds"]:
+                raise SystemExit("acceptance records miss replicates")
+            rms[(seq, d)] = math.sqrt(sum(x * x for x in err) / len(err))
+    binomial = {d: math.sqrt(sum(e * (1 - e) / d for e in exact) / len(exact)) for d in acc["draws"]}
+    return rms, binomial
+
+
+def figure_acceptance(acc, path):
+    """Left: exact acceptance of each subtree. Right: error of its estimates
+    against the number of draws."""
+    fig, (left, right) = plt.subplots(1, 2, figsize=(9.5, 3.4), facecolor=SURFACE)
+    subs = acc["subtrees"]
+    style(left)
+    left.plot([s["prefix"][0] for s in subs], [s["accepted"] / s["size"] for s in subs],
+              color=MUTED, marker="o", markersize=3.5, linewidth=1.4)
+    left.set_title("exact acceptance of each subtree", fontsize=9, color=TEXT, loc="left")
+    left.set_xlabel("value of the first part", fontsize=8, color=MUTED)
+    left.set_ylabel("acceptance", fontsize=8, color=MUTED)
+    left.set_ylim(0, 1.02)
+    left.xaxis.set_major_locator(MaxNLocator(integer=True))
+    style(right)
+    rms, binomial = acceptance_rms(acc)
+    lines = []
+    for seq, key in ACCEPT_SERIES:
+        color, marker, _ = SERIES[key]
+        (ln,) = right.plot(acc["draws"], [rms[(seq, d)] for d in acc["draws"]], color=color, marker=marker,
+                           markersize=3.5, linewidth=1.4, label=SHORT[key])
+        lines.append(ln)
+    right.plot(acc["draws"], [binomial[d] for d in acc["draws"]], color=MUTED, linewidth=0.8)
+    right.set_xscale("log", base=2)
+    right.set_yscale("log")
+    right.set_xticks(acc["draws"])
+    right.set_xticklabels([str(d) for d in acc["draws"]])
+    right.minorticks_off()
+    right.set_xlim(right=acc["draws"][-1] * 2.2)
+    right.set_title("error of estimates from the first points", fontsize=9, color=TEXT, loc="left")
+    right.set_xlabel("points drawn per subtree", fontsize=8, color=MUTED)
+    right.set_ylabel("root-mean-square error", fontsize=8, color=MUTED)
+    handles = [Line2D([], [], color=SERIES[k][0], marker=SERIES[k][1], linewidth=1.4, markersize=4)
+               for _, k in ACCEPT_SERIES] + [Line2D([], [], color=MUTED, linewidth=0.8)]
+    names = ["rank (scrambled)", "coordinate (scrambled)", "iid", "iid, expected"]
+    fig.legend(handles, names, loc="upper center", ncol=len(names), frameon=False, fontsize=8)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    label_ends(fig, right, lines)
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def describe_groups(groups, parts):
+    """Words for a list of group limits: runs of adjacent parts with the same
+    size and sums are counted together."""
+    runs, out = {}, []
+    for g in groups:
+        ps = sorted(g["parts"])
+        sums = f"{g['min_sum']}..{g['max_sum']}"
+        if ps == list(range(ps[0], ps[-1] + 1)):
+            runs.setdefault((len(ps), sums), []).append((ps[0], ps[-1]))
+        elif ps == list(range(0, parts, 2)):
+            out.append(f"the even parts summing to {sums}")
+        else:
+            out.append("parts " + ", ".join(map(str, ps)) + f" summing to {sums}")
+    words = []
+    for (size, sums), spans in runs.items():
+        if len(spans) == 1:
+            words.append(f"parts {spans[0][0]} to {spans[0][1]} summing to {sums}")
+        else:
+            words.append(f"{len(spans)} groups of {size} adjacent parts, each summing to {sums}")
+    return words + out
+
+
+def describe_limits(sp):
+    words = []
+    if sp["min_count"] > 0 or sp["max_count"] < sp["parts"]:
+        words.append(f"{sp['min_count']} to {sp['max_count']} nonzero parts")
+    if sp["min_size"]:
+        if len(set(sp["min_size"])) != 1:
+            raise SystemExit("describe_limits handles one min_size for every part")
+        words.append(f"each part 0 or at least {sp['min_size'][0]}")
+    words += describe_groups(sp["groups"], sp["parts"])
+    return "; ".join(words) if words else "none"
 
 
 def fmt(x, digits=3):
@@ -306,6 +402,128 @@ def main():
         lines.append(f"| {r['source']} | {r['handed_out']} | {r['skipped']} | "
                      f"{'yes' if r['switched'] else 'no'} |")
     values["table_fresh"] = "\n".join(lines)
+
+    # Section 6: constrained spaces.
+    lim = data["limited_spaces"]
+    base = lim[0]
+    if base["name"] != "base" or describe_limits(base) != "none":
+        raise SystemExit("the first limited space should be the unconstrained base")
+    if any(s["parts"] != base["parts"] or s["total"] != base["total"] or s["lower"] != base["lower"]
+           or s["upper"] != base["upper"] for s in lim):
+        raise SystemExit("limited spaces do not share one base")
+    if len(set(base["lower"])) != 1 or len(set(base["upper"])) != 1 or base["lower"][0] != 0:
+        raise SystemExit("the base should bound every part by 0..cap")
+    values["limited_parts"] = str(base["parts"])
+    values["limited_total"] = str(base["total"])
+    values["limited_cap"] = str(base["upper"][0])
+    if any(s["builds"] != base["builds"] for s in lim):
+        raise SystemExit("limited spaces were built a different number of times")
+    values["limited_build_runs"] = {3: "three", 5: "five"}.get(base["builds"], str(base["builds"]))
+    ops = {(r["space"], r["op"]): r["ns"] for r in data["limited_ops"]}
+    lines = ["| space | limits | size | layers per row, at most | table MiB | build ms | "
+             "logarithmic table MiB | build ms |",
+             "|---|---|---:|---:|---:|---:|---:|---:|"]
+    for s in lim:
+        lines.append(f"| {s['name']} | {describe_limits(s)} | {int(s['size']):.2e} | {fmt(s['layers'])} | "
+                     f"{fmt(s['table_bytes'] / 2**20)} | {fmt(s['build_seconds'] * 1e3)} | "
+                     f"{fmt(s['log_table_bytes'] / 2**20)} | {fmt(s['log_build_seconds'] * 1e3)} |")
+    values["table_limited"] = "\n".join(lines)
+    lines = ["| space | unrank | rank | decode | decode (logarithmic) | repair |",
+             "|---|---:|---:|---:|---:|---:|"]
+    for s in lim:
+        cells = [fmt(ops[(s["name"], op)] / 1000) for op in ("unrank", "rank", "decode_exact", "decode_log", "repair")]
+        lines.append(f"| {s['name']} | " + " | ".join(cells) + " |")
+    values["table_limited_ops"] = "\n".join(lines)
+    by_name = {s["name"]: s for s in lim}
+    for name in ("count", "groups", "nested", "crossing", "combined"):
+        values[f"layers_{name}"] = fmt(by_name[name]["layers"])
+        values[f"mib_{name}"] = fmt(by_name[name]["table_bytes"] / 2**20)
+        values[f"ms_build_{name}"] = fmt(by_name[name]["build_seconds"] * 1e3)
+    values["count_range"] = str(by_name["count"]["max_count"] + 1)
+    if by_name["count"]["layers"] != by_name["count"]["max_count"] + 1:
+        raise SystemExit("the count space's layers are not its count range")
+    values["total_plus_one"] = str(base["total"] + 1)
+    unrank_ratio = max(ops[(s["name"], "unrank")] / ops[("base", "unrank")] for s in lim)
+    values["unrank_ratio_max"] = f"{unrank_ratio:.1f}"
+    repairs = sorted((ops[(s["name"], "repair")], s["name"]) for s in lim if s["name"] != "base")
+    values["us_repair_base"] = fmt(ops[("base", "repair")] / 1000)
+    values["ms_repair_min"] = fmt(repairs[0][0] / 1e6)
+    values["repair_min_name"] = repairs[0][1]
+    values["ms_repair_max"] = fmt(repairs[-1][0] / 1e6)
+    values["repair_max_name"] = repairs[-1][1]
+
+    lsp = data["limited_spread"]
+    top_lim = max(r["n"] for r in lsp)
+    values["limited_n"] = str(top_lim)
+    lim_seqs = ("rank", "rank_scrambled", "coordinate_scrambled", "iid")
+    for key, title in (("gap_ratio", "gap"), ("marginal_max", "marginal")):
+        lines = ["| space | " + " | ".join(lim_seqs) + " |", "|---|" + "---:|" * len(lim_seqs)]
+        for s in lim:
+            cells = [fmt(float(next(r[key] for r in lsp if r["space"] == s["name"] and r["sequence"] == q
+                                    and r["n"] == top_lim))) for q in lim_seqs]
+            lines.append(f"| {s['name']} | " + " | ".join(cells) + " |")
+        values[f"table_limited_{title}"] = "\n".join(lines)
+    values["limited_worst_gap_rank"] = fmt(max(r["gap_ratio"] for r in lsp if r["sequence"].startswith("rank")))
+    # The first part's largest error in points (error times N) at powers of two.
+    first_part = max(r["marginal_by_part"][0] * r["n"] for r in lsp
+                     if r["sequence"] == "coordinate_scrambled" and pow2(r["n"]))
+    if first_part > 2:
+        raise SystemExit("coordinate first part is more than two points off at a power of two")
+    values["limited_first_part_points"] = f"{first_part:.2f}"
+    # The prose says the coordinate sequence has the smallest marginal error on every space.
+    for s in lim:
+        at = {r["sequence"]: r["marginal_max"] for r in lsp if r["space"] == s["name"] and r["n"] == top_lim}
+        if any(at["coordinate_scrambled"] >= at[q] for q in lim_seqs if q != "coordinate_scrambled"):
+            raise SystemExit(f"coordinate is not the smallest marginal error on {s['name']}")
+
+    acc = data["acceptance"]
+    subs = acc["subtrees"]
+    if any(len(s["prefix"]) != 1 for s in subs):
+        raise SystemExit("acceptance subtrees are not one level down")
+    exact = [s["accepted"] / s["size"] for s in subs]
+    values["accept_filter"] = (" + ".join(f"{w} x[{i}]" if w != 1 else f"x[{i}]" for i, w in enumerate(acc["weights"]))
+                               + f" <= {acc['limit']}")
+    values["accept_whole"] = f"{sum(s['accepted'] for s in subs) / sum(s['size'] for s in subs):.1%}"
+    values["accept_min"] = f"{min(exact):.1%}"
+    values["accept_max"] = f"{max(exact):.1%}"
+    values["accept_subtrees"] = str(len(subs))
+    values["accept_space_parts"] = str(spaces[acc["space"]]["parts"])
+    values["accept_seeds"] = str(acc["seeds"])
+    figure_acceptance(acc, folder / "acceptance.png")
+    rms, binomial = acceptance_rms(acc)
+    shown = [d for d in acc["draws"] if d in (16, 64, 256, 1024)]
+    lines = ["| sequence | " + " | ".join(f"{d} points" for d in shown) + " |", "|---|" + "---:|" * len(shown)]
+    for seq, _ in ACCEPT_SERIES:
+        lines.append(f"| {seq} | " + " | ".join(fmt(rms[(seq, d)]) for d in shown) + " |")
+    lines.append("| iid, expected | " + " | ".join(fmt(binomial[d]) for d in shown) + " |")
+    values["table_acceptance"] = "\n".join(lines)
+    top_d = acc["draws"][-1]
+    values["accept_top_draws"] = str(top_d)
+    values["accept_rank_gain"] = f"{rms[('iid', top_d)] / rms[('rank_scrambled', top_d)]:.1f}"
+    values["accept_coord_gain"] = f"{rms[('iid', top_d)] / rms[('coordinate_scrambled', top_d)]:.1f}"
+    # The prose says independent draws follow the binomial error.
+    if any(abs(rms[("iid", d)] / binomial[d] - 1) > 0.2 for d in acc["draws"]):
+        raise SystemExit("iid acceptance error is off its binomial value")
+
+    ff = data["fresh_filter"]
+    keys = ("prefix", "region_size", "first", "visited_inside", "new_accepted", "new_rejected", "weights", "limit")
+    if any(r[k] != ff[0][k] for r in ff for k in keys):
+        raise SystemExit("fresh_filter records use different settings")
+    f0 = ff[0]
+    values["ff_filter"] = (" + ".join(f"{w} x[{i}]" if w != 1 else f"x[{i}]" for i, w in enumerate(f0["weights"]))
+                           + f" <= {f0['limit']}")
+    values["ff_prefix"] = "(" + ", ".join(str(v) for v in f0["prefix"]) + ")"
+    values["ff_size"] = str(f0["region_size"])
+    values["ff_first"] = str(f0["first"])
+    values["ff_inside"] = str(f0["visited_inside"])
+    values["ff_new_accepted"] = str(f0["new_accepted"])
+    values["ff_new_rejected"] = str(f0["new_rejected"])
+    lines = ["| source | points handed out | rejected | visited points passed over | moved to rank order |",
+             "|---|---:|---:|---:|---|"]
+    for r in ff:
+        lines.append(f"| {r['source']} | {r['handed_out']} | {r['rejected']} | {r['skipped']} | "
+                     f"{'yes' if r['switched'] else 'no'} |")
+    values["table_fresh_filter"] = "\n".join(lines)
 
     ns = sorted({r["n"] for r in spread})
     values["n_checkpoints"] = str(len(ns))
