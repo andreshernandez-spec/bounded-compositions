@@ -335,6 +335,28 @@ void decode_block(void* context, std::uint64_t block) {
     }
 }
 
+struct encode_job {
+    const bc::space* s;
+    const std::int32_t* x;
+    double* of;
+    std::uint64_t* ou;
+    std::size_t rows;
+};
+
+void encode_block(void* context, std::uint64_t block) {
+    const auto* j = static_cast<const encode_job*>(context);
+    const std::size_t n = j->s->parts();
+    const std::size_t d = n - 1;
+    const std::size_t end = std::min<std::size_t>(j->rows, (block + 1) * rows_per_block);
+    for (std::size_t r = block * rows_per_block; r < end; ++r) {
+        if (j->of != nullptr) {
+            bc::encode(*j->s, j->x + r * n, j->of + r * d);
+        } else {
+            bc::encode(*j->s, j->x + r * n, j->ou + r * d);
+        }
+    }
+}
+
 struct repair_job {
     const bc::space* s;
     const double* z;
@@ -732,7 +754,7 @@ NB_MODULE(_core, m) {
         "input is read as 64-bit fractions u / 2^64.");
     m.def(
         "encode",
-        [](const bc::space& s, nb::handle x, nb::handle dtype) {
+        [](const bc::space& s, nb::handle x, nb::handle dtype, int workers) {
             if (s.parts() < 2) throw nb::value_error("encode needs at least two parts");
             const std::string name =
                 nb::cast<std::string>(numpy().attr("dtype")(dtype).attr("name"));
@@ -746,19 +768,18 @@ NB_MODULE(_core, m) {
             const std::size_t d = s.parts() - 1;
             nb::object out =
                 one ? empty(std::nullopt, d, name.c_str()) : empty(rows, d, name.c_str());
-            const std::int32_t* p = i32_data(a);
-            if (name == "float64") {
-                double* o = f64_data(out);
-                for (std::size_t r = 0; r < rows; ++r) bc::encode(s, p + r * s.parts(), o + r * d);
-            } else {
-                std::uint64_t* o = u64_data(out);
-                for (std::size_t r = 0; r < rows; ++r) bc::encode(s, p + r * s.parts(), o + r * d);
-            }
+            const bool doubles = name == "float64";
+            encode_job job{&s, i32_data(a), doubles ? f64_data(out) : nullptr,
+                           doubles ? nullptr : u64_data(out), rows};
+            bc::executor* ex = executor_for(workers);
+            nb::gil_scoped_release release;
+            run_blocks(ex, blocks_for(rows), &encode_block, &job);
             return out;
         },
-        "space"_a, "x"_a, "dtype"_a = "float64",
+        "space"_a, "x"_a, "dtype"_a = "float64", nb::kw_only(), "workers"_a = 1,
         "The centre of each composition's cell in [0, 1)^(parts - 1), so that "
-        "decode(encode(x)) == x.");
+        "decode(encode(x)) == x. Raises ValueError for a composition whose cell is narrower "
+        "than the dtype can represent (decode never produces those).");
 
     // --------------------------------------------------------------- repair
     m.def(

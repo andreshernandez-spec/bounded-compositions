@@ -9,6 +9,9 @@ first parts form a contiguous Region.
 Sequences produce compositions one index at a time: point i depends only on
 the space, the kind of sequence, its seed and i. Seeds are the 64-bit seeds of
 the C++ library, so the same seed gives the same points in both.
+
+bounded_compositions.scipy adapts spaces to SciPy: a QMCEngine of
+unit-cube codes and box objectives for scipy.optimize.
 """
 
 import os

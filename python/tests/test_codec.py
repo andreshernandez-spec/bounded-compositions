@@ -30,6 +30,15 @@ def test_rows_with_workers_match_one_by_one(wide):
     assert (bc.decode(logs, u, workers=2) == rows).mean() > 0.99
 
 
+def test_cells_too_narrow_for_doubles_have_no_code(wide):
+    # Part 0 takes 100 in one composition out of about 2^195.
+    with pytest.raises(ValueError):
+        bc.encode(wide, [100] + [0] * 99)
+    with pytest.raises(ValueError):
+        bc.encode(wide, [100] + [0] * 99, dtype=np.uint64)
+    assert bc.encode(wide, [0] * 99 + [100]).shape == (99,)
+
+
 def test_decode_rejects_bad_input(small):
     with pytest.raises(ValueError):
         bc.decode(small, [0.5] * 4)
