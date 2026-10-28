@@ -52,6 +52,26 @@ python -m pip install ".[test]"
 python -m pytest
 ```
 
+`bounded_compositions.scipy` maps compositions to the unit cube for SciPy: a
+`QMCEngine` whose samples decode to a sequence's compositions, and
+`box_objective`, which hands any box-bounded optimiser a function of
+compositions:
+
+```python
+import bounded_compositions as bc
+from bounded_compositions.scipy import CompositionEngine, box_objective, decode_box
+from scipy.optimize import differential_evolution
+
+def f(x):  # any function of a composition
+    return float(((x - [30, 30, 0, 20, 20, 0, 0, 0, 0, 0]) ** 2).sum())
+
+space = bc.Space(100, [0] * 10, [40] * 10, min_count=3, max_count=6)
+objective, bounds = box_objective(space, f)
+init = CompositionEngine(space, rng=1).random(64)
+res = differential_evolution(objective, bounds, init=init)
+best = decode_box(space, res.x)
+```
+
 Meson consumers can use the `bounded-compositions` dependency (`bounded_compositions_dep`).
 
 ## License
