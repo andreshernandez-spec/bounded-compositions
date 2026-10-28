@@ -71,6 +71,9 @@ void sequence_data::rank_of(std::uint64_t i, k::limb* out) const {
             break;
         }
         case sequence_kind::iid:
+            // uniform_below writes only the span's limbs; a region narrower than
+            // the space would keep the last point's high limbs.
+            k::limbs_zero(out, rank_limbs);
             if (k::uniform_below(size.limbs(), as_int(size.limb_count()), key, i, out) !=
                 k::status::ok) {
                 throw std::logic_error("bounded_compositions: uniform draw failed");
