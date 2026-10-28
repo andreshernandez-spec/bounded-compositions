@@ -25,6 +25,7 @@ add_executable(bounded_compositions_tests
   test_region.cpp
   test_repair.cpp
   test_sequence.cpp
+  test_sequence_vectors.cpp
   test_smoke.cpp
   test_space.cpp
   test_support.cpp)

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.4"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "bounded-compositions"
+dynamic = ["version"]
+description = "Count, rank, enumerate and sample bounded integer compositions"
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "licenses/*"]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.25"]
+
+[project.optional-dependencies]
+scipy = ["scipy>=1.15"]
+optuna = ["optuna>=4.0"]
+test = ["pytest>=8"]
+
+[project.urls]
+Source = "https://github.com/andreshernandez-spec/bounded-compositions"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/python/{wheel_tag}"
+wheel.packages = ["python/bounded_compositions"]
+wheel.py-api = "cp312"
+cmake.define = { BCOMP_BUILD_PYTHON = "ON", BCOMP_BUILD_TESTS = "OFF" }
+sdist.exclude = ["build", "builddir", ".github"]
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = 'project\(bounded-compositions VERSION (?P<value>[0-9.]+)'
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

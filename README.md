@@ -44,6 +44,14 @@ ctest --preset dev
 Presets: `dev`, `release`, `asan-ubsan`, `tsan`, `cxx20`, `cxx23`. Tests use
 Catch2 v3; it is fetched automatically if not installed.
 
+The Python package `bounded_compositions` (nanobind, NumPy in and out) builds
+with pip:
+
+```sh
+python -m pip install ".[test]"
+python -m pytest
+```
+
 Meson consumers can use the `bounded-compositions` dependency (`bounded_compositions_dep`).
 
 ## License

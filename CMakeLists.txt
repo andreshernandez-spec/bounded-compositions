@@ -4,6 +4,12 @@ project(bounded-compositions VERSION 0.0.1 LANGUAGES CXX)
 
 option(BCOMP_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 option(BCOMP_WERROR "Treat warnings as errors" OFF)
+option(BCOMP_BUILD_PYTHON "Build the Python extension (python/)" OFF)
+
+if(BCOMP_BUILD_PYTHON)
+  # The static library is linked into a shared extension module.
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -85,4 +91,8 @@ if(BCOMP_BUILD_BENCH)
   target_link_libraries(bounded_compositions_sampling_report
     PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
   target_link_libraries(bounded_compositions_unrank_bench PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
+endif()
+
+if(BCOMP_BUILD_PYTHON)
+  add_subdirectory(python)
 endif()
