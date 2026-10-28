@@ -53,6 +53,7 @@ if not meson.is_subproject()
       'tests/test_region.cpp',
       'tests/test_repair.cpp',
       'tests/test_sequence.cpp',
+      'tests/test_sequence_vectors.cpp',
       'tests/test_smoke.cpp',
       'tests/test_space.cpp',
       'tests/test_support.cpp',
