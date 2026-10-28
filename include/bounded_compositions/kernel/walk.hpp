@@ -40,6 +40,12 @@ BCOMP_KERNEL std::int32_t seg_step(const space_view& s, int i, int g) {
 // to. Returns false if there are none.
 BCOMP_KERNEL bool move(const space_view& s, int i, int g, std::int32_t k, std::int32_t layer,
                        std::int32_t* first, std::int32_t* last, std::int32_t* next) {
+    if (s.plain != 0) {  // one segment, 0..cap, one layer
+        *first = 0;
+        *last = seg_last(s, i, 0) < k ? seg_last(s, i, 0) : k;
+        *next = 0;
+        return true;
+    }
     std::int32_t a = seg_first(s, i, g);
     std::int32_t b = seg_last(s, i, g) < k ? seg_last(s, i, g) : k;
     const std::int32_t count =
@@ -180,6 +186,19 @@ BCOMP_KERNEL std::int32_t part_value(const space_view& s, int i, std::int32_t k,
     return -1;
 }
 
+// part_value for a plain space (one segment 0..cap, one layer). It is small
+// enough to inline into the loops of unrank and decode; the call to
+// part_value cost them about 10% on 100 parts.
+BCOMP_KERNEL std::int32_t plain_value(const space_view& s, int i, std::int32_t k, const limb* r,
+                                      int w, limb* rest) {
+    const int wn = s.row_limbs[i + 1];
+    const int wt = w > wn ? w : wn;
+    limb t[max_limbs];
+    limbs_sub(table_entry(s, i + 1, 0, k), wn, r, w, t, wt);
+    const std::int32_t b = seg_last(s, i, 0) < k ? seg_last(s, i, 0) : k;
+    return search_segment(s, i, k, 0, 0, b, t, wt, rest);
+}
+
 // Writes the composition of the given rank to out[0..n).
 BCOMP_KERNEL status unrank(const space_view& s, const limb* rank, int rank_limbs,
                            std::int32_t* out) {
@@ -192,7 +211,8 @@ BCOMP_KERNEL status unrank(const space_view& s, const limb* rank, int rank_limbs
     std::int32_t k = s.total;
     std::int32_t c = s.layer_base;
     for (int i = 0; i + 1 < s.n; ++i) {
-        const std::int32_t a = part_value(s, i, k, c, r, w, r, &c);
+        const std::int32_t a =
+            s.plain != 0 ? plain_value(s, i, k, r, w, r) : part_value(s, i, k, c, r, w, r, &c);
         if (a < 0) return status::invalid;
         w = s.row_limbs[i + 1];  // the remainder is below N[i+1][k - a][c]
         out[i] = a + s.lo[i];
@@ -219,9 +239,19 @@ BCOMP_KERNEL status decode(const space_view& s, const limb* u, std::int32_t* out
     for (int i = 0; i + 1 < s.n; ++i) {
         const int w = s.row_limbs[i];
         // N[i][k][c] times u[i], keeping the top w limbs.
-        completions(s, i, c, k, count);
+        if (s.plain != 0) {  // completions() without its checks
+            const limb* hi = table_entry(s, i, 0, k);
+            if (k > 0) {
+                limbs_sub(hi, w, hi - w, w, count, w);
+            } else {
+                limbs_copy(hi, w, count, w);
+            }
+        } else {
+            completions(s, i, c, k, count);
+        }
         count[w] = limbs_mul_add_word(count, w, u[i], 0);
-        const std::int32_t a = part_value(s, i, k, c, count + 1, w, nullptr, &c);
+        const std::int32_t a = s.plain != 0 ? plain_value(s, i, k, count + 1, w, nullptr)
+                                            : part_value(s, i, k, c, count + 1, w, nullptr, &c);
         if (a < 0) return status::invalid;
         out[i] = a + s.lo[i];
         k -= a;
@@ -234,6 +264,15 @@ BCOMP_KERNEL status decode(const space_view& s, const limb* u, std::int32_t* out
 // keeps the support and group limits.
 BCOMP_KERNEL bool contains(const space_view& s, const std::int32_t* x) {
     if (s.feasible == 0) return false;
+    if (s.plain != 0) {
+        std::int64_t sum = 0;
+        for (int i = 0; i < s.n; ++i) {
+            const std::int64_t y = static_cast<std::int64_t>(x[i]) - s.lo[i];
+            if (y < 0 || y > s.cap[i]) return false;
+            sum += y;
+        }
+        return sum == s.total;
+    }
     std::int32_t k = s.total;
     std::int32_t c = s.layer_base;
     for (int i = 0; i < s.n; ++i) {
@@ -276,6 +315,21 @@ BCOMP_KERNEL status rank(const space_view& s, const std::int32_t* x, limb* out, 
     if (out_limbs < s.row_limbs[0]) return status::too_many_limbs;
     limbs_zero(out, out_limbs);
     std::int32_t k = s.total;
+    if (s.plain != 0) {
+        // The values below y leave P[i+1][k] - P[i+1][k - y] completions.
+        limb t[max_limbs];
+        for (int i = 0; i + 1 < s.n; ++i) {
+            const std::int32_t y = x[i] - s.lo[i];
+            if (y > 0) {
+                const int wn = s.row_limbs[i + 1];
+                limbs_sub(table_entry(s, i + 1, 0, k), wn, table_entry(s, i + 1, 0, k - y), wn, t,
+                          wn);
+                limbs_add(out, out_limbs, t, wn, out, out_limbs);
+            }
+            k -= y;
+        }
+        return status::ok;
+    }
     std::int32_t c = s.layer_base;
     for (int i = 0; i + 1 < s.n; ++i) {
         const std::int32_t y = x[i] - s.lo[i];
