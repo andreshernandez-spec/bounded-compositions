@@ -35,3 +35,15 @@ regex = 'project\(bounded-compositions VERSION (?P<value>[0-9.]+)'
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
+
+[tool.cibuildwheel]
+# cp312 builds the abi3 wheel for 3.12 and later.
+build = ["cp310-*", "cp311-*", "cp312-*"]
+skip = ["*-musllinux_*", "*-win32", "*_i686"]
+test-extras = ["test"]
+test-sources = ["python/tests", "tests/data", "tools", "package"]
+test-command = "python -m pytest -q python/tests"
+
+[tool.cibuildwheel.macos]
+# C++17 library features (std::optional's exceptions) need 10.14 or later.
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }

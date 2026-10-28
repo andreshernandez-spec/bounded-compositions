@@ -1,0 +1,2 @@
+bounded-compositions @ git+https://github.com/andreshernandez-spec/bounded-compositions
+optuna>=4.0
