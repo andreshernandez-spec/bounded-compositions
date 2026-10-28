@@ -72,6 +72,23 @@ res = differential_evolution(objective, bounds, init=init)
 best = decode_box(space, res.x)
 ```
 
+`bounded_compositions.optuna` has two ways to search compositions with Optuna.
+`CompositionSampler` gives trial number t point t of a sequence, so the
+workers of a distributed study draw distinct points without sharing a counter
+(give them the same seed). `suggest_composition` works with any sampler (TPE,
+CMA-ES, GP, NSGA-II) through the unit-cube codec:
+
+```python
+import optuna
+from bounded_compositions.optuna import CompositionSampler, suggest_composition, suggest_parts
+
+study = optuna.create_study(sampler=CompositionSampler(space, seed=1))
+study.optimize(lambda trial: f(suggest_parts(trial, space)), n_trials=100)
+
+study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=1))
+study.optimize(lambda trial: f(suggest_composition(trial, "x", space)), n_trials=100)
+```
+
 Meson consumers can use the `bounded-compositions` dependency (`bounded_compositions_dep`).
 
 ## License

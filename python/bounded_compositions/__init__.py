@@ -12,6 +12,8 @@ the C++ library, so the same seed gives the same points in both.
 
 bounded_compositions.scipy adapts spaces to SciPy: a QMCEngine of
 unit-cube codes and box objectives for scipy.optimize.
+bounded_compositions.optuna adapts them to Optuna: a sampler that gives
+trial t point t of a sequence, and suggest_composition for any sampler.
 """
 
 import os

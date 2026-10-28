@@ -15,7 +15,7 @@ dependencies = ["numpy>=1.25"]
 [project.optional-dependencies]
 scipy = ["scipy>=1.15"]
 optuna = ["optuna>=4.0"]
-test = ["pytest>=8", "scipy>=1.15"]
+test = ["pytest>=8", "scipy>=1.15", "optuna>=4.0", "cmaes"]
 
 [project.urls]
 Source = "https://github.com/andreshernandez-spec/bounded-compositions"
