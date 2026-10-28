@@ -11,6 +11,7 @@ in either counting mode.
 The goal is sampling that can be extended in place (the first N points are
 well spread for every N, and asking for more continues the same sequence), and
 that splits into regions that can be sampled independently.
+[docs/sampling.md](docs/sampling.md) explains the methods and measures them.
 
 **Status: pre-alpha. Nothing usable yet.**
 

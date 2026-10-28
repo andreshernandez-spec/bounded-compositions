@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -61,40 +62,41 @@ std::vector<space_spec> spaces() {
     };
 }
 
-// P(x_i = v) for every part, from the logarithmic tables (relative error
-// about 1e-12): propagate the distribution of what is left to place.
-std::vector<std::vector<double>> exact_marginals(const space_spec& p) {
-    const bc::space logs(p.total, p.lo, p.hi, bc::counting::logarithmic);
+// P(x_i = lower[i] + y) for every part, from the logarithmic tables
+// (relative error about 1e-12): propagate the distribution over the states
+// (layer, what is left to place) row by row.
+std::vector<std::vector<double>> exact_marginals(const bc::space& logs) {
     const k::space_view v = logs.view();
-    const std::size_t n = p.lo.size();
-    auto log_count = [&](int row, std::int32_t kk) {
-        return k::log_window(v, row, 0, kk, kk, nullptr);  // no support limits: layer 0
-    };
-    std::vector<double> dist(static_cast<std::size_t>(v.total) + 1, 0.0);
-    dist[static_cast<std::size_t>(v.total)] = 1.0;
+    const std::size_t n = static_cast<std::size_t>(v.n);
+    const std::size_t width = static_cast<std::size_t>(v.total) + 1;
+    std::vector<double> dist(static_cast<std::size_t>(v.row_layers[0]) * width, 0.0);
+    dist[static_cast<std::size_t>(v.layer_base) * width + static_cast<std::size_t>(v.total)] = 1.0;
     std::vector<std::vector<double>> marg(n);
-    for (std::size_t i = 0; i + 1 < n; ++i) {
+    for (std::size_t i = 0; i < n; ++i) {
+        const int row = static_cast<int>(i);
         marg[i].assign(static_cast<std::size_t>(v.cap[i]) + 1, 0.0);
-        std::vector<double> next(dist.size(), 0.0);
-        for (std::int32_t kk = 0; kk <= v.total; ++kk) {
-            const double here = dist[static_cast<std::size_t>(kk)];
-            if (here == 0.0) continue;
-            const double total_log = log_count(static_cast<int>(i), kk);
-            for (std::int32_t y = 0; y <= std::min(v.cap[i], kk); ++y) {
-                const double lc = log_count(static_cast<int>(i) + 1, kk - y);
-                if (k::log_is_zero(lc)) continue;
-                const double prob = here * std::exp(lc - total_log);
-                marg[i][static_cast<std::size_t>(y)] += prob;
-                next[static_cast<std::size_t>(kk - y)] += prob;
+        std::vector<double> next(static_cast<std::size_t>(v.row_layers[i + 1]) * width, 0.0);
+        for (std::int32_t c = 0; c < v.row_layers[i]; ++c) {
+            for (std::int32_t kk = 0; kk <= v.total; ++kk) {
+                const double here =
+                    dist[static_cast<std::size_t>(c) * width + static_cast<std::size_t>(kk)];
+                if (here == 0.0) continue;
+                const double whole = k::log_window(v, row, c, kk, kk, nullptr);
+                for (int g = 0; g < v.segs[i]; ++g) {
+                    std::int32_t a = 0, b = 0, cn = 0;
+                    if (!k::move(v, row, g, kk, c, &a, &b, &cn)) continue;
+                    for (std::int32_t y = a; y <= b; ++y) {
+                        const double lc = k::log_window(v, row + 1, cn, kk - y, kk - y, nullptr);
+                        if (k::log_is_zero(lc)) continue;
+                        const double prob = here * std::exp(lc - whole);
+                        marg[i][static_cast<std::size_t>(y)] += prob;
+                        next[static_cast<std::size_t>(cn) * width +
+                             static_cast<std::size_t>(kk - y)] += prob;
+                    }
+                }
             }
         }
         dist.swap(next);
-    }
-    // The last part takes whatever is left.
-    marg[n - 1].assign(static_cast<std::size_t>(v.cap[n - 1]) + 1, 0.0);
-    for (std::int32_t kk = 0; kk <= v.total; ++kk) {
-        if (kk <= v.cap[n - 1])
-            marg[n - 1][static_cast<std::size_t>(kk)] += dist[static_cast<std::size_t>(kk)];
     }
     for (const auto& m : marg) {
         double s = 0.0;
@@ -102,6 +104,45 @@ std::vector<std::vector<double>> exact_marginals(const space_spec& p) {
         require(std::abs(s - 1.0) < 1e-9, "marginals sum to one");
     }
     return marg;
+}
+
+// The same space with its parts in reverse order.
+bc::space reversed(const bc::space& s) {
+    const std::size_t n = s.parts();
+    const composition lo(s.lower().rbegin(), s.lower().rend());
+    const composition hi(s.upper().rbegin(), s.upper().rend());
+    bc::support_limits sup = s.support();
+    std::reverse(sup.min_size.begin(), sup.min_size.end());
+    std::vector<bc::group_limit> groups = s.groups();
+    for (bc::group_limit& g : groups) {
+        for (std::int32_t& p : g.parts) p = static_cast<std::int32_t>(n) - 1 - p;
+    }
+    return bc::space(s.total(), lo, hi, sup, groups);
+}
+
+// The first part's marginal from exact subtree sizes.
+std::vector<double> first_part_marginal(const bc::space& s) {
+    std::vector<double> m(static_cast<std::size_t>(s.upper()[0] - s.lower()[0]) + 1, 0.0);
+    for (const bc::region& kid : bc::children(s, bc::whole(s))) {
+        m[static_cast<std::size_t>(kid.prefix()[0] - s.lower()[0])] =
+            kid.size().to_double() / s.size().to_double();
+    }
+    return m;
+}
+
+// The propagated marginals of the first and the last part against exact
+// counts: the last part is the first of the reversed space.
+void check_marginals(const bc::space& s, const std::vector<std::vector<double>>& marg) {
+    const std::vector<double> head = first_part_marginal(s);
+    const std::vector<double> tail = first_part_marginal(reversed(s));
+    require(head.size() == marg.front().size() && tail.size() == marg.back().size(),
+            "marginal lengths");
+    for (std::size_t y = 0; y < head.size(); ++y) {
+        require(std::abs(head[y] - marg.front()[y]) < 1e-9, "first part's marginal is exact");
+    }
+    for (std::size_t y = 0; y < tail.size(); ++y) {
+        require(std::abs(tail[y] - marg.back()[y]) < 1e-9, "last part's marginal is exact");
+    }
 }
 
 struct named_sequence {
@@ -130,62 +171,73 @@ std::vector<std::uint64_t> checkpoints(const bc::natural& size) {
     return out;
 }
 
+// Gap ratio, marginal error and distinct points of each sequence at every
+// checkpoint, one record each.
+void spread_rows(const std::string& name, const bc::space& s,
+                 const std::vector<std::vector<double>>& marg,
+                 const std::vector<named_sequence>& qs, std::vector<std::string>& rows) {
+    const std::size_t n = s.parts();
+    const std::vector<std::uint64_t> cps = checkpoints(s.size());
+    const std::uint64_t most = cps.back();
+    const double size = s.size().to_double();
+    for (const named_sequence& q : qs) {
+        const bc::sequence seq = q.make(s);
+        std::vector<std::int32_t> pts(most * n);
+        seq.points(0, most, pts.data());
+        std::vector<std::vector<double>> counts(n);
+        for (std::size_t i = 0; i < n; ++i) counts[i].assign(marg[i].size(), 0.0);
+        std::vector<bc::natural> ranks;
+        std::set<bc::natural> distinct;
+        std::uint64_t done = 0;
+        for (std::uint64_t cp : cps) {
+            for (; done < cp; ++done) {
+                const std::int32_t* x = pts.data() + done * n;
+                require(s.contains(x), "every point is a composition");
+                for (std::size_t i = 0; i < n; ++i)
+                    counts[i][static_cast<std::size_t>(x[i] - s.lower()[i])] += 1.0;
+                const bc::natural r = s.rank(x);
+                ranks.push_back(r);
+                distinct.insert(r);
+            }
+            require(ranks.size() == cp, "checkpoint size");
+            // Largest gap between sampled ranks, with ends -1 and size.
+            std::vector<bc::natural> sorted(distinct.begin(), distinct.end());
+            double widest = sorted.front().to_double() + 1.0;
+            for (std::size_t i = 1; i < sorted.size(); ++i) {
+                widest = std::max(widest, (sorted[i] - sorted[i - 1]).to_double());
+            }
+            widest = std::max(widest, (s.size() - sorted.back()).to_double());
+            std::vector<double> by_part(n);
+            double worst = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                double d = 0.0;
+                for (std::size_t vv = 0; vv < marg[i].size(); ++vv) {
+                    d = std::max(d,
+                                 std::abs(counts[i][vv] / static_cast<double>(cp) - marg[i][vv]));
+                }
+                by_part[i] = d;
+                worst = std::max(worst, d);
+            }
+            std::ostringstream row;
+            row << "{\"space\": " << quote(name) << ", \"sequence\": " << quote(q.name)
+                << ", \"n\": " << cp << ", \"distinct\": " << distinct.size()
+                << ", \"gap_ratio\": " << num(widest * static_cast<double>(cp) / size)
+                << ", \"marginal_max\": " << num(worst)
+                << ", \"marginal_by_part\": " << list<double>(by_part, num) << "}";
+            rows.push_back(row.str());
+        }
+    }
+}
+
 std::string spread_records(std::vector<std::string>& extra_parts) {
     std::vector<std::string> rows;
     for (const space_spec& p : spaces()) {
         const bc::space s(p.total, p.lo, p.hi);
         const std::size_t n = s.parts();
-        const auto marg = exact_marginals(p);
-        const std::vector<std::uint64_t> cps = checkpoints(s.size());
-        const std::uint64_t most = cps.back();
-        const double size = s.size().to_double();
-        for (const named_sequence& q : sequences()) {
-            const bc::sequence seq = q.make(s);
-            std::vector<std::int32_t> pts(most * n);
-            seq.points(0, most, pts.data());
-            std::vector<std::vector<double>> counts(n);
-            for (std::size_t i = 0; i < n; ++i) counts[i].assign(marg[i].size(), 0.0);
-            std::vector<bc::natural> ranks;
-            std::set<bc::natural> distinct;
-            std::uint64_t done = 0;
-            for (std::uint64_t cp : cps) {
-                for (; done < cp; ++done) {
-                    const std::int32_t* x = pts.data() + done * n;
-                    require(s.contains(x), "every point is a composition");
-                    for (std::size_t i = 0; i < n; ++i)
-                        counts[i][static_cast<std::size_t>(x[i] - p.lo[i])] += 1.0;
-                    const bc::natural r = s.rank(x);
-                    ranks.push_back(r);
-                    distinct.insert(r);
-                }
-                require(ranks.size() == cp, "checkpoint size");
-                // Largest gap between sampled ranks, with ends -1 and size.
-                std::vector<bc::natural> sorted(distinct.begin(), distinct.end());
-                double widest = sorted.front().to_double() + 1.0;
-                for (std::size_t i = 1; i < sorted.size(); ++i) {
-                    widest = std::max(widest, (sorted[i] - sorted[i - 1]).to_double());
-                }
-                widest = std::max(widest, (s.size() - sorted.back()).to_double());
-                std::vector<double> by_part(n);
-                double worst = 0.0;
-                for (std::size_t i = 0; i < n; ++i) {
-                    double d = 0.0;
-                    for (std::size_t vv = 0; vv < marg[i].size(); ++vv) {
-                        d = std::max(
-                            d, std::abs(counts[i][vv] / static_cast<double>(cp) - marg[i][vv]));
-                    }
-                    by_part[i] = d;
-                    worst = std::max(worst, d);
-                }
-                std::ostringstream row;
-                row << "{\"space\": " << quote(p.name) << ", \"sequence\": " << quote(q.name)
-                    << ", \"n\": " << cp << ", \"distinct\": " << distinct.size()
-                    << ", \"gap_ratio\": " << num(widest * static_cast<double>(cp) / size)
-                    << ", \"marginal_max\": " << num(worst)
-                    << ", \"marginal_by_part\": " << list<double>(by_part, num) << "}";
-                rows.push_back(row.str());
-            }
-        }
+        const auto marg =
+            exact_marginals(bc::space(p.total, p.lo, p.hi, bc::counting::logarithmic));
+        check_marginals(s, marg);
+        spread_rows(p.name, s, marg, sequences(), rows);
         std::ostringstream info;
         info << "{\"name\": " << quote(p.name) << ", \"parts\": " << n << ", \"total\": " << p.total
              << ", \"lower\": "
@@ -451,6 +503,356 @@ std::string fresh_records() {
     return list<std::string>(rows, [](const std::string& r) { return r; });
 }
 
+// Section 6 of the report: one base space, 30 parts summing to 100 with each
+// part 0..20, under each kind of limit.
+struct limited_spec {
+    std::string name;
+    bc::support_limits support;
+    std::vector<bc::group_limit> groups;
+};
+
+const std::int32_t limited_parts = 30, limited_total = 100, limited_cap = 20;
+
+bc::group_limit run_of(std::int32_t first, std::int32_t count, std::int32_t min_sum,
+                       std::int32_t max_sum) {
+    bc::group_limit g;
+    for (std::int32_t p = first; p < first + count; ++p) g.parts.push_back(p);
+    g.min_sum = min_sum;
+    g.max_sum = max_sum;
+    return g;
+}
+
+std::vector<limited_spec> limited_specs() {
+    bc::support_limits count;
+    count.min_count = 5;
+    count.max_count = 12;
+    bc::support_limits size;
+    size.min_size.assign(static_cast<std::size_t>(limited_parts), 3);
+    bc::support_limits both = count;
+    both.min_size = size.min_size;
+    // Six groups of five adjacent parts; the two halves of three groups each
+    // nest them; the even parts and parts 10 to 19 cross.
+    std::vector<bc::group_limit> six;
+    for (std::int32_t g = 0; g < 6; ++g) six.push_back(run_of(5 * g, 5, 10, 30));
+    std::vector<bc::group_limit> nested = six;
+    nested.push_back(run_of(0, 15, 40, 60));
+    nested.push_back(run_of(15, 15, 40, 60));
+    bc::group_limit even;
+    for (std::int32_t p = 0; p < limited_parts; p += 2) even.parts.push_back(p);
+    even.min_sum = 40;
+    even.max_sum = 60;
+    return {
+        {"base", {}, {}},
+        {"count", count, {}},
+        {"min_size", size, {}},
+        {"support", both, {}},
+        {"groups", {}, six},
+        {"nested", {}, nested},
+        {"crossing", {}, {even, run_of(10, 10, 20, 40)}},
+        {"combined", both, six},
+    };
+}
+
+// per_call_ns over enough calls for about 0.2 s, at least 3 and at most most.
+double adaptive_ns(std::uint64_t most, const std::function<void(std::uint64_t)>& f) {
+    const auto t0 = std::chrono::steady_clock::now();
+    f(0);
+    const double want = 0.2 / std::max(seconds_since(t0), 1e-9);
+    const std::uint64_t calls =
+        std::min<std::uint64_t>(most, std::max<std::uint64_t>(3, static_cast<std::uint64_t>(want)));
+    return per_call_ns(calls, f);
+}
+
+std::string ints(const std::vector<std::int32_t>& v) {
+    return list<std::int32_t>(v, [](const std::int32_t& x) { return std::to_string(x); });
+}
+
+// Each limited space: its table, the spread of its sequences, and the cost of
+// single operations.
+void limited_records(std::string& spaces_out, std::string& spread_out, std::string& ops_out) {
+    std::vector<std::string> infos, spread, ops;
+    const composition lo(static_cast<std::size_t>(limited_parts), 0);
+    const composition hi(static_cast<std::size_t>(limited_parts), limited_cap);
+    const std::vector<named_sequence> all = sequences();
+    const std::vector<named_sequence> qs = {all[0], all[1], all[3], all[4]};
+    for (const limited_spec& p : limited_specs()) {
+        std::fprintf(stderr, "  %s\n", p.name.c_str());
+        const int builds = 3;
+        std::vector<double> exact_runs, log_runs;
+        for (int r = 0; r < builds; ++r) {
+            auto t0 = std::chrono::steady_clock::now();
+            const bc::space e(limited_total, lo, hi, p.support, p.groups);
+            exact_runs.push_back(seconds_since(t0));
+            t0 = std::chrono::steady_clock::now();
+            const bc::space l(limited_total, lo, hi, p.support, p.groups,
+                              bc::counting::logarithmic);
+            log_runs.push_back(seconds_since(t0));
+        }
+        std::sort(exact_runs.begin(), exact_runs.end());
+        std::sort(log_runs.begin(), log_runs.end());
+        require(static_cast<int>(exact_runs.size()) == builds, "every build ran");
+        const bc::space s(limited_total, lo, hi, p.support, p.groups);
+        const bc::space logs(limited_total, lo, hi, p.support, p.groups, bc::counting::logarithmic);
+        require(!s.empty() && !logs.empty(), "limited space is non-empty");
+        const std::size_t n = s.parts();
+        const k::space_view v = s.view();
+        std::int32_t layers = 0;
+        for (std::size_t r = 0; r <= n; ++r) layers = std::max(layers, v.row_layers[r]);
+        std::vector<std::string> groups;
+        for (const bc::group_limit& g : p.groups) {
+            groups.push_back("{\"parts\": " + ints(g.parts) +
+                             ", \"min_sum\": " + std::to_string(g.min_sum) +
+                             ", \"max_sum\": " + std::to_string(g.max_sum) + "}");
+        }
+        std::ostringstream info;
+        info << "{\"name\": " << quote(p.name) << ", \"parts\": " << n
+             << ", \"total\": " << limited_total << ", \"lower\": " << ints(lo)
+             << ", \"upper\": " << ints(hi) << ", \"min_count\": " << p.support.min_count
+             << ", \"max_count\": " << p.support.max_count
+             << ", \"min_size\": " << ints(p.support.min_size) << ", \"groups\": "
+             << list<std::string>(groups, [](const std::string& r) { return r; })
+             << ", \"size\": " << quote(s.size().to_string())
+             << ", \"size_bits\": " << s.size().bit_length() << ", \"layers\": " << layers
+             << ", \"table_bytes\": " << s.table_bytes()
+             << ", \"log_table_bytes\": " << logs.table_bytes() << ", \"builds\": " << builds
+             << ", \"build_seconds\": " << num(exact_runs[1])
+             << ", \"log_build_seconds\": " << num(log_runs[1]) << "}";
+        infos.push_back(info.str());
+
+        const auto marg = exact_marginals(logs);
+        check_marginals(s, marg);
+        spread_rows(p.name, s, marg, qs, spread);
+
+        const std::uint64_t most = 20000;
+        const bc::sequence iid = bc::iid_sequence(s, 7);
+        std::vector<bc::natural> ranks(most);
+        for (std::uint64_t i = 0; i < most; ++i) ranks[i] = iid.rank_at(i);
+        std::vector<std::vector<std::uint64_t>> us(most, std::vector<std::uint64_t>(n - 1));
+        for (std::uint64_t i = 0; i < most; ++i) {
+            for (std::size_t j = 0; j + 1 < n; ++j)
+                us[i][j] = (i + 1) * 0x9E3779B97F4A7C15u * (j + 3);
+        }
+        // Repair targets around the space: each part uniform in [0, 2 total / n].
+        std::mt19937 rng(11);
+        std::uniform_real_distribution<double> unit(0.0, 2.0 * limited_total / limited_parts);
+        std::vector<std::vector<double>> zs(most, std::vector<double>(n));
+        for (auto& z : zs) {
+            for (double& zi : z) zi = unit(rng);
+        }
+        composition x(n);
+        for (std::uint64_t i = 0; i < 20; ++i) {
+            bc::repair(s, zs[i].data(), x.data());
+            require(s.contains(x), "repair gives a composition of the space");
+        }
+        std::int64_t check = 0;
+        auto add = [&](const std::string& op, double ns) {
+            ops.push_back("{\"op\": " + quote(op) + ", \"space\": " + quote(p.name) +
+                          ", \"ns\": " + num(ns) + "}");
+        };
+        add("unrank", adaptive_ns(most, [&](std::uint64_t i) {
+                s.unrank(ranks[i], x.data());
+                check += x[0];
+            }));
+        add("rank", adaptive_ns(most, [&](std::uint64_t i) {
+                s.unrank(ranks[i], x.data());
+                check += static_cast<std::int64_t>(s.rank(x.data()).bit_length());
+            }));
+        add("decode_exact", adaptive_ns(most, [&](std::uint64_t i) {
+                bc::decode(s, us[i].data(), x.data());
+                check += x[0];
+            }));
+        add("decode_log", adaptive_ns(most, [&](std::uint64_t i) {
+                bc::decode(logs, us[i].data(), x.data());
+                check += x[0];
+            }));
+        add("repair", adaptive_ns(most, [&](std::uint64_t i) {
+                bc::repair(s, zs[i].data(), x.data());
+                check += x[0];
+            }));
+        require(check != 0, "operation loops did work");
+    }
+    auto join = [](const std::vector<std::string>& v) {
+        return list<std::string>(v, [](const std::string& r) { return r; });
+    };
+    spaces_out = join(infos);
+    spread_out = join(spread);
+    ops_out = join(ops);
+}
+
+// A weighted budget, weights[i] x[i] summed over the parts at most limit: a
+// linear limit the table does not count, for the filter.
+struct budget {
+    std::vector<std::int64_t> weights;
+    std::int64_t limit;
+};
+
+bool within_budget(void* context, const std::int32_t* x) {
+    const budget& b = *static_cast<const budget*>(context);
+    std::int64_t sum = 0;
+    for (std::size_t i = 0; i < b.weights.size(); ++i) sum += b.weights[i] * x[i];
+    return sum <= b.limit;
+}
+
+// Weights 1, 2, ..., parts.
+budget rising_budget(std::size_t parts, std::int64_t limit) {
+    budget b{std::vector<std::int64_t>(parts), limit};
+    for (std::size_t i = 0; i < parts; ++i) b.weights[i] = static_cast<std::int64_t>(i) + 1;
+    return b;
+}
+
+std::string budget_fields(const budget& b) {
+    return "\"weights\": " +
+           list<std::int64_t>(b.weights, [](const std::int64_t& w) { return std::to_string(w); }) +
+           ", \"limit\": " + std::to_string(b.limit);
+}
+
+// Calls f on every composition of subtree t of s.
+void for_each_in(const bc::space& s, const bc::region& t,
+                 const std::function<void(const std::int32_t*)>& f) {
+    const composition& prefix = t.prefix();
+    composition x(s.parts());
+    std::copy(prefix.begin(), prefix.end(), x.begin());
+    if (prefix.size() == s.parts()) {
+        f(x.data());
+        return;
+    }
+    const bc::space sub = s.subspace(prefix);
+    composition y(sub.parts());
+    if (!sub.first(y.data())) return;
+    do {
+        std::copy(y.begin(), y.end(), x.begin() + static_cast<std::ptrdiff_t>(prefix.size()));
+        f(x.data());
+    } while (sub.next(y.data()));
+}
+
+// The budget's acceptance in each first-level subtree of the medium space:
+// exact by enumeration, and estimated from the first points of each
+// subtree's sequences, one replicate per seed.
+std::string acceptance_records() {
+    const space_spec p = spaces()[1];  // medium
+    const bc::space s(p.total, p.lo, p.hi);
+    const std::size_t n = s.parts();
+    budget b = rising_budget(n, 160);
+    const std::vector<std::uint64_t> draws = {16, 32, 64, 128, 256, 512, 1024};
+    const std::uint64_t seeds = 16;
+    const std::vector<std::string> kinds = {"rank_scrambled", "coordinate_scrambled", "iid"};
+    auto counts = [](const std::vector<std::uint64_t>& v) {
+        return list<std::uint64_t>(v, [](const std::uint64_t& c) { return std::to_string(c); });
+    };
+    std::vector<std::string> rows;
+    std::vector<std::int32_t> pts(draws.back() * n);
+    for (const bc::region& kid : bc::children(s, bc::whole(s))) {
+        std::uint64_t seen = 0, kept = 0;
+        for_each_in(s, kid, [&](const std::int32_t* x) {
+            ++seen;
+            if (within_budget(&b, x)) ++kept;
+        });
+        require(bc::natural(seen) == kid.size(), "enumerated the whole subtree");
+        std::vector<std::string> estimates;
+        for (const std::string& kind : kinds) {
+            std::vector<std::string> replicates;
+            for (std::uint64_t seed = 1; seed <= seeds; ++seed) {
+                const bc::sequence seq = kind == "rank_scrambled" ? bc::rank_sequence(s, kid, seed)
+                                         : kind == "iid" ? bc::iid_sequence(s, kid, seed)
+                                                         : bc::coordinate_sequence(s, kid, seed);
+                require(seq.capacity() >= draws.back(), "subtree holds the draws");
+                seq.points(0, draws.back(), pts.data());
+                std::vector<std::uint64_t> accepted;
+                std::uint64_t a = 0, d = 0;
+                for (std::uint64_t want : draws) {
+                    for (; d < want; ++d) {
+                        const std::int32_t* x = pts.data() + d * n;
+                        require(kid.contains(s.rank(x)), "draws stay in the subtree");
+                        if (within_budget(&b, x)) ++a;
+                    }
+                    accepted.push_back(a);
+                }
+                replicates.push_back(counts(accepted));
+            }
+            require(replicates.size() == seeds, "every seed ran");
+            estimates.push_back(
+                quote(kind) + ": " +
+                list<std::string>(replicates, [](const std::string& r) { return r; }));
+        }
+        std::string est = "{";
+        for (std::size_t i = 0; i < estimates.size(); ++i) est += (i ? ", " : "") + estimates[i];
+        rows.push_back(
+            "{\"prefix\": " + ints(kid.prefix()) + ", \"size\": " + std::to_string(seen) +
+            ", \"accepted\": " + std::to_string(kept) + ", \"estimates\": " + est + "}}");
+    }
+    return "{\"space\": " + quote(p.name) + ", " + budget_fields(b) +
+           ", \"draws\": " + counts(draws) + ", \"seeds\": " + std::to_string(seeds) +
+           ", \"subtrees\": " + list<std::string>(rows, [](const std::string& r) { return r; }) +
+           "}";
+}
+
+// fresh_sampler with the budget as its filter, on the subtree of
+// fresh_records after the same points were visited: every acceptable point
+// not visited comes out exactly once.
+std::string fresh_filter_records() {
+    std::vector<std::string> rows;
+    const space_spec p = spaces()[0];  // small
+    const bc::space s(p.total, p.lo, p.hi);
+    const std::size_t n = s.parts();
+    const std::uint64_t first = 16384;
+    const composition prefix{5, 5, 5};
+    budget b = rising_budget(n, 100);
+    const bc::region t = bc::subtree(s, prefix);
+    const std::uint64_t size = t.size().to_u64();
+    const bc::sequence global = bc::rank_sequence(s);
+    std::set<bc::natural> before;
+    for (std::uint64_t i = 0; i < first; ++i) before.insert(global.rank_at(i));
+    std::uint64_t inside = 0, new_kept = 0, new_dropped = 0;
+    for_each_in(s, t, [&](const std::int32_t* x) {
+        if (before.count(s.rank(x)) != 0) {
+            ++inside;
+        } else if (within_budget(&b, x)) {
+            ++new_kept;
+        } else {
+            ++new_dropped;
+        }
+    });
+    require(inside + new_kept + new_dropped == size, "enumerated the whole subtree");
+    const std::vector<named_sequence> sources = {
+        {"rank", [&](const bc::space&) { return bc::rank_sequence(s, t); }},
+        {"coordinate_scrambled",
+         [&](const bc::space&) { return bc::coordinate_sequence(s, t, 1); }},
+        {"iid", [&](const bc::space&) { return bc::iid_sequence(s, t, 1); }},
+    };
+    for (const named_sequence& q : sources) {
+        bc::visited_set visited(s);
+        for (const bc::natural& r : before) visited.insert(r);
+        bc::fresh_sampler fresh(q.make(s), visited, &within_budget, &b);
+        std::vector<std::int32_t> out(size * n);
+        const std::uint64_t got = fresh.take(size, out.data());
+        std::set<bc::natural> distinct;
+        for (std::uint64_t i = 0; i < got; ++i) {
+            const std::int32_t* x = out.data() + i * n;
+            const bc::natural r = s.rank(x);
+            require(t.contains(r) && within_budget(&b, x),
+                    "filtered points are accepted and inside");
+            distinct.insert(r);
+        }
+        require(distinct.size() == got, "filtered points are distinct");
+        require(got == new_kept && fresh.accepted() == got, "every acceptable new point came out");
+        require(fresh.exhausted(), "the subtree ran out");
+        if (q.name == "rank") {
+            require(fresh.rejected() == new_dropped && fresh.skipped() == inside,
+                    "the rank sequence draws each point once");
+        }
+        std::ostringstream row;
+        row << "{\"space\": " << quote(p.name) << ", \"source\": " << quote(q.name)
+            << ", \"prefix\": " << ints(prefix) << ", \"region_size\": " << size
+            << ", \"first\": " << first << ", \"visited_inside\": " << inside
+            << ", \"new_accepted\": " << new_kept << ", \"new_rejected\": " << new_dropped << ", "
+            << budget_fields(b) << ", \"handed_out\": " << got
+            << ", \"rejected\": " << fresh.rejected() << ", \"skipped\": " << fresh.skipped()
+            << ", \"switched\": " << (fresh.switched() ? "true" : "false") << "}";
+        rows.push_back(row.str());
+    }
+    return list<std::string>(rows, [](const std::string& r) { return r; });
+}
+
 std::string machine_record() {
     std::string model = "unknown";
     std::ifstream cpu("/proc/cpuinfo");
@@ -492,6 +894,12 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "regions...\n");
     const std::string resume = resume_records();
     const std::string fresh = fresh_records();
+    std::fprintf(stderr, "limited spaces...\n");
+    std::string limited_spaces, limited_spread, limited_ops;
+    limited_records(limited_spaces, limited_spread, limited_ops);
+    std::fprintf(stderr, "filters...\n");
+    const std::string acceptance = acceptance_records();
+    const std::string fresh_filter = fresh_filter_records();
     std::fprintf(stderr, "throughput...\n");
     const std::string throughput = throughput_records();
     std::fprintf(stderr, "build cost...\n");
@@ -502,6 +910,9 @@ int main(int argc, char** argv) {
     out << "{\n\"machine\": " << machine_record() << ",\n\"spaces\": "
         << list<std::string>(space_info, [](const std::string& r) { return r; })
         << ",\n\"spread\": " << spread << ",\n\"resume\": " << resume << ",\n\"fresh\": " << fresh
+        << ",\n\"limited_spaces\": " << limited_spaces
+        << ",\n\"limited_spread\": " << limited_spread << ",\n\"limited_ops\": " << limited_ops
+        << ",\n\"acceptance\": " << acceptance << ",\n\"fresh_filter\": " << fresh_filter
         << ",\n\"throughput\": " << throughput << ",\n\"build\": " << build
         << ",\n\"latency\": " << latency << "\n}\n";
     require(static_cast<bool>(out), "records written");
