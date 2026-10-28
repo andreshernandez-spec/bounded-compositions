@@ -271,6 +271,14 @@ bool call_filter(void* context, const std::int32_t* x) {
 
 // fresh_sampler keeps the filter's context pointer, so the filter lives here
 // at a fixed address. The visited set is kept alive by the Python binding.
+// One return per branch: MSVC does not elide the copy of a non-copyable
+// sampler out of a conditional expression.
+bc::fresh_sampler make_sampler(const bc::sequence& source, bc::visited_set& visited, py_filter* f,
+                               std::uint64_t patience) {
+    if (f != nullptr) return bc::fresh_sampler(source, visited, &call_filter, f, patience);
+    return bc::fresh_sampler(source, visited, patience);
+}
+
 struct fresh {
     std::size_t parts;
     std::unique_ptr<py_filter> filter;
@@ -280,8 +288,7 @@ struct fresh {
           std::uint64_t patience)
         : parts(source.domain().parts()),
           filter(std::move(f)),
-          sampler(filter ? bc::fresh_sampler(source, visited, &call_filter, filter.get(), patience)
-                         : bc::fresh_sampler(source, visited, patience)) {}
+          sampler(make_sampler(source, visited, filter.get(), patience)) {}
 };
 
 // The filter can refer back to its sampler (a lambda whose globals hold
