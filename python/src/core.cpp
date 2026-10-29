@@ -603,6 +603,9 @@ NB_MODULE(_core, m) {
         .def_prop_ro("prefix", &bc::region::prefix,
                      "The longest prefix shared by every composition of the region.")
         .def_prop_ro("is_subtree", &bc::region::is_subtree)
+        .def_prop_ro("space", &bc::region::domain,
+                     "The space the region was made from. Functions taking a space and a region "
+                     "raise ValueError for a region of another space.")
         .def(
             "contains",
             [](const bc::region& r, nb::handle rank) {

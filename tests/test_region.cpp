@@ -341,7 +341,34 @@ TEST_CASE("region sequences stay inside the region and follow the space's order"
         }
         CHECK(next == in_region.capacity());
     }
-    CHECK_THROWS_AS(bc::rank_sequence(sub, t), std::out_of_range);  // t lies past sub's ranks
+    CHECK_THROWS_AS(bc::rank_sequence(sub, t), std::invalid_argument);  // t is a region of s
+}
+
+TEST_CASE("a region is used only with its own space or an equal one") {
+    // A subtree of a, ranks [2, 3), whose ranks and prefix mean something else in b.
+    const bc::space a(1, composition(3, 0), composition(3, 1));
+    const bc::space b(2, composition(3, 0), composition(3, 2));
+    const bc::region t = bc::subtree(a, composition{1});
+    CHECK_THROWS_AS(bc::coordinate_sequence(b, t), std::invalid_argument);
+    CHECK_THROWS_AS(bc::rank_sequence(b, t), std::invalid_argument);
+    CHECK_THROWS_AS(bc::iid_sequence(b, t, 1), std::invalid_argument);
+    CHECK_THROWS_AS(bc::children(b, t), std::invalid_argument);
+    CHECK_THROWS_AS(bc::split(b, t, 2), std::invalid_argument);
+    CHECK_THROWS_AS(bc::dyadic_split(b, t, 1), std::invalid_argument);
+    CHECK_THROWS_AS(bc::describe(b, t), std::invalid_argument);
+    // A prefix longer than the other space has parts: describe used to write
+    // past the end of its output.
+    const bc::space four(4, composition(4, 1), composition(4, 1));
+    const bc::space two(2, composition(2, 0), composition(2, 2));
+    CHECK_THROWS_AS(bc::describe(two, bc::whole(four)), std::invalid_argument);
+    // An equal space built separately has the same ranks: the region carries over.
+    const bc::space again(1, composition(3, 0), composition(3, 1));
+    std::vector<std::int32_t> x(3);
+    bc::coordinate_sequence(again, t).points(0, 1, x.data());
+    CHECK(x == composition{1, 0, 0});
+    CHECK(bc::describe(again, t).size() == 3);
+    CHECK((t == bc::subtree(again, composition{1})));
+    CHECK((t != bc::interval(b, t.begin(), t.end())));  // same ranks of another space
 }
 
 TEST_CASE("a subspace that int32 cannot describe is rejected") {

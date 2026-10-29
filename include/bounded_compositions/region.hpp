@@ -3,6 +3,11 @@
 // Lexicographic rank is a tree: the compositions sharing a prefix (fixed
 // values for the first j parts) form a contiguous rank interval, a subtree.
 // Any region can be sampled on its own with a region sequence (sequence.hpp).
+//
+// A region belongs to the space it was made from, and to any space equal to
+// it (same total, bounds, support and group limits, so the same ranks).
+// Every function that takes a space and a region throws
+// std::invalid_argument if the region belongs to another space.
 #ifndef BCOMP_REGION_HPP
 #define BCOMP_REGION_HPP
 
@@ -29,17 +34,19 @@ class region {
     const std::vector<std::int32_t>& prefix() const noexcept { return prefix_; }
     // True if the region is exactly the compositions that start with prefix().
     bool is_subtree() const noexcept { return subtree_; }
+    // The space the region was made from.
+    const space& domain() const noexcept { return domain_; }
 
-    // Regions are equal when they cover the same ranks; prefix and subtree
-    // flag follow from the ranks.
-    friend bool operator==(const region& a, const region& b) {
-        return a.begin_ == b.begin_ && a.end_ == b.end_;
-    }
+    // Regions are equal when they cover the same ranks of equal spaces;
+    // prefix and subtree flag follow from those.
+    friend bool operator==(const region& a, const region& b);
     friend bool operator!=(const region& a, const region& b) { return !(a == b); }
 
   private:
-    region(natural begin, natural end, std::vector<std::int32_t> prefix, bool subtree);
+    region(space domain, natural begin, natural end, std::vector<std::int32_t> prefix,
+           bool subtree);
 
+    space domain_;
     natural begin_;
     natural end_;
     std::vector<std::int32_t> prefix_;

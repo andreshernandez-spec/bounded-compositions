@@ -121,7 +121,8 @@ sequence iid_sequence(const space& s, std::uint64_t seed);
 // the same order, and overlap() says where a region resumes. For regions
 // wider than 64 bits a sequence holds fewer points than the region: a piece's
 // sequence starts with r's points in it, then continues with ranks r's
-// sequence does not reach. Throws std::out_of_range if r ends past s.size().
+// sequence does not reach. Throws std::invalid_argument if r belongs to
+// another space (region.hpp).
 sequence rank_sequence(const space& s, const region& r);
 sequence rank_sequence(const space& s, const region& r, std::uint64_t scramble_seed);
 sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
