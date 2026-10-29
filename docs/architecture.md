@@ -51,12 +51,12 @@ restriction applies to the kernel layer.
 | Sequence | An indexed mapping from immutable configuration to compositions, with a separate cursor. |
 | Support | The parts whose values are nonzero. |
 
-Ranks and cached prefixes have meaning relative to a space. Treat a region
-as belonging to the space that created it, including copies of that space;
-do not transfer its cached metadata to another space. The current `region`
-value does not retain domain identity. Consumers must validate compatibility
-before using metadata; incomplete checks are review R1. Region equality
-currently compares endpoints only and is not a domain-compatibility check.
+Ranks and cached prefixes have meaning relative to a space. A region keeps
+the space that created it (`region::domain`) and belongs to that space and
+to any space equal to it under `detail::same_space`. Every function taking a
+space and a region checks this before reading the region's ranks or prefix,
+and throws `std::invalid_argument` for a region of another space. Region
+equality compares endpoints and domains.
 
 The current `detail::same_space` check compares total, ordered bounds, support
 limits and ordered group descriptions. It does not prove equivalence of
@@ -94,7 +94,8 @@ Widen operands before arithmetic, then check before narrowing, multiplying
 allocation dimensions or computing offsets. Saturation must not change a
 feasible set; reject an unsupported representation explicitly. Subspace
 metadata must reconstruct the same set as its table, including after Python
-pickling. Review R3 and R8 identify violations.
+pickling: `space::subspace` computes the remaining total and group limits in
+64 bits and rejects a prefix that int32 metadata cannot describe.
 
 Exact tables store prefix sums of suffix counts in flat row-major limb arrays:
 
@@ -166,7 +167,7 @@ nearest-double conversion of `natural` has rounding counterexamples (R7).
 | `space` | `shared_ptr<const space_data>`; copies share tables | Its view borrows storage from that ownership chain |
 | Subspace | Parent reference and remaining-part metadata | Parent tables and planning arrays |
 | `sequence` | Immutable shared configuration and its own atomic cursor | Executor/output for a call |
-| `region` | Endpoints, cached prefix and subtree flag | Domain association is a caller obligation today |
+| `region` | Endpoints, cached prefix, subtree flag and a copy of its space | None |
 | `visited_set` | A space copy and a sharded exact set of ranks | Input composition buffers |
 | `fresh_sampler` | Copies of source and fallback sequences | Visited set, filter context, executor/output |
 | `thread_pool` | Workers, synchronization and current job state | Callback/context until `run` finishes |

@@ -43,3 +43,21 @@ def test_region_basics(small):
         bc.interval(small, 0, small.size + 1)
     with pytest.raises(ValueError):
         bc.subtree(small, [13])
+
+
+def test_a_region_belongs_to_its_space():
+    a = bc.Space(1, [0] * 3, [1] * 3)
+    b = bc.Space(2, [0] * 3, [2] * 3)
+    r = bc.subtree(a, [1])
+    assert r.space.total == 1
+    for call in (
+        lambda: bc.coordinate_sequence(b, r),
+        lambda: bc.rank_sequence(b, r),
+        lambda: bc.describe(b, r),
+        lambda: bc.split(b, r, 2),
+    ):
+        with pytest.raises(ValueError, match="another space"):
+            call()
+    again = bc.Space(1, [0] * 3, [1] * 3)
+    assert bc.coordinate_sequence(again, r).points(0, 1)[0].tolist() == [1, 0, 0]
+    assert r == bc.subtree(again, [1]) and r != bc.interval(b, r.begin, r.end)

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <random>
 #include <stdexcept>
@@ -340,5 +341,63 @@ TEST_CASE("region sequences stay inside the region and follow the space's order"
         }
         CHECK(next == in_region.capacity());
     }
-    CHECK_THROWS_AS(bc::rank_sequence(sub, t), std::out_of_range);  // t lies past sub's ranks
+    CHECK_THROWS_AS(bc::rank_sequence(sub, t), std::invalid_argument);  // t is a region of s
+}
+
+TEST_CASE("a region is used only with its own space or an equal one") {
+    // A subtree of a, ranks [2, 3), whose ranks and prefix mean something else in b.
+    const bc::space a(1, composition(3, 0), composition(3, 1));
+    const bc::space b(2, composition(3, 0), composition(3, 2));
+    const bc::region t = bc::subtree(a, composition{1});
+    CHECK_THROWS_AS(bc::coordinate_sequence(b, t), std::invalid_argument);
+    CHECK_THROWS_AS(bc::rank_sequence(b, t), std::invalid_argument);
+    CHECK_THROWS_AS(bc::iid_sequence(b, t, 1), std::invalid_argument);
+    CHECK_THROWS_AS(bc::children(b, t), std::invalid_argument);
+    CHECK_THROWS_AS(bc::split(b, t, 2), std::invalid_argument);
+    CHECK_THROWS_AS(bc::dyadic_split(b, t, 1), std::invalid_argument);
+    CHECK_THROWS_AS(bc::describe(b, t), std::invalid_argument);
+    // A prefix longer than the other space has parts: describe used to write
+    // past the end of its output.
+    const bc::space four(4, composition(4, 1), composition(4, 1));
+    const bc::space two(2, composition(2, 0), composition(2, 2));
+    CHECK_THROWS_AS(bc::describe(two, bc::whole(four)), std::invalid_argument);
+    // An equal space built separately has the same ranks: the region carries over.
+    const bc::space again(1, composition(3, 0), composition(3, 1));
+    std::vector<std::int32_t> x(3);
+    bc::coordinate_sequence(again, t).points(0, 1, x.data());
+    CHECK(x == composition{1, 0, 0});
+    CHECK(bc::describe(again, t).size() == 3);
+    CHECK((t == bc::subtree(again, composition{1})));
+    CHECK((t != bc::interval(b, t.begin(), t.end())));  // same ranks of another space
+}
+
+TEST_CASE("a subspace that int32 cannot describe is rejected") {
+    const std::int32_t least = std::numeric_limits<std::int32_t>::min();
+    const std::int32_t most = std::numeric_limits<std::int32_t>::max();
+    // The remaining total, 2 * most, does not fit.
+    const composition fixed{least, most, most};
+    const bc::space s(most - 1, fixed, fixed);
+    REQUIRE(s.size() == natural(1));
+    CHECK_THROWS_AS(s.subspace(composition{least}), std::invalid_argument);
+    // A group's limits for the remaining parts (2.6e9) do not fit, although
+    // the remaining total does.
+    const composition x{-2000000000, 1300000000, 1300000000, -2000000000};
+    const bc::space g(-1400000000, x, x, bc::support_limits{},
+                      {bc::group_limit{{0, 1, 2}, 600000000, 600000000}});
+    REQUIRE(g.size() == natural(1));
+    CHECK_THROWS_AS(g.subspace(composition{-2000000000}), std::invalid_argument);
+    // A limit out of int32 that the remaining parts cannot reach becomes the
+    // nearest int32, and an absent limit stays absent.
+    const bc::space h(0, composition{-2000000000, 0, 1999999990},
+                      composition{-1999999998, 4, 2000000000}, bc::support_limits{},
+                      {bc::group_limit{{0, 1}, least, 200000000}});
+    const bc::space sub = h.subspace(composition{-2000000000});
+    REQUIRE(sub.groups().size() == 1);
+    CHECK(sub.groups()[0].min_sum == least);
+    CHECK(sub.groups()[0].max_sum == most);  // 2.2e9, above the remaining part's 4
+    const bc::space rebuilt(sub.total(), sub.lower(), sub.upper(), sub.support(), sub.groups());
+    REQUIRE(rebuilt.size() == sub.size());
+    for (std::uint64_t r = 0; r < sub.size().to_u64(); ++r) {
+        CHECK(rebuilt.unrank(natural(r)) == sub.unrank(natural(r)));
+    }
 }
