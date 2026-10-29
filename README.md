@@ -5,7 +5,7 @@ Count, rank, enumerate and sample bounded integer compositions:
     { x in Z^n : x[0] + ... + x[n-1] = K,  lo[i] <= x[i] <= hi[i] }
 
 optionally with limits on the number of nonzero parts, semicontinuous parts
-(each nonzero `x[i]` at least `s[i]` in size) and the sums of groups of parts,
+(`x[i] == 0` or `abs(x[i]) >= s[i]`) and the sums of groups of parts,
 in either counting mode.
 
 The goal is sampling that can be extended in place (the first N points are
@@ -13,25 +13,33 @@ well spread for every N, and asking for more continues the same sequence), and
 that splits into regions that can be sampled independently.
 [docs/sampling.md](docs/sampling.md) explains the methods and measures them.
 
-**Status: pre-alpha. Nothing usable yet.**
+**Status: pre-alpha.** Counting, ranking, enumeration, sampling, repair and
+Python adapters are implemented. APIs and numerical contracts are still being
+reviewed; the [code review](docs/reviews/2026-10-29.md) records known defects.
 
 ## Design
 
-- C++17, no third-party dependencies.
+- C++17 core, no third-party dependencies. Tests and Python bindings have
+  separate dependencies.
 - A compiled host library, plus a small header-only kernel layer for the
   per-point work, kept compatible with GPU compilation
   ([docs/kernel-rules.md](docs/kernel-rules.md)).
-- Thread-safe: a sequence's data is immutable, and point `i` depends only on
-  the space, the seed and `i`. The set of evaluated points is shared through
-  locks.
-- No repeats: a region lists its compositions in the space's order, so it
-  resumes where earlier sampling stopped; a set of evaluated points covers
-  other orders and sequence kinds.
+- A sequence shares immutable data. Its point `i` is determined by its space,
+  region, kind, scrambling options, seed and `i`; its cursor reserves index
+  ranges atomically. Evaluated points are shared through a locked set.
+- Rank sequences visit distinct compositions up to their capacity and preserve
+  their order across regions. `fresh_sampler` uses a visited set to remove
+  repeats across other orders, seeds and sequence kinds.
 - Limits the table does not count (general linear inequalities, say) go
   through a filter that rejects points and counts the acceptance per region.
   `repair` maps any real vector to the nearest composition of a space.
 - Exact multiprecision counting, or logarithmic counting for spaces too large
   for exact tables.
+
+The [architecture](docs/architecture.md) defines the layers, ownership,
+representations and behavioral contracts. The [coding style](docs/coding-style.md)
+defines naming, formatting, documentation and review rules. Changes to the code
+must follow both; known deviations are recorded in the review linked above.
 
 ## Build
 
@@ -74,9 +82,11 @@ best = decode_box(space, res.x)
 
 `bounded_compositions.optuna` has two ways to search compositions with Optuna.
 `CompositionSampler` gives trial number t point t of a sequence, so the
-workers of a distributed study draw distinct points without sharing a counter
-(give them the same seed). `suggest_composition` works with any sampler (TPE,
-CMA-ES, GP, NSGA-II) through the unit-cube codec:
+workers of a distributed study use distinct sequence indices without sharing
+a counter (give them the same space, seed and sampling options). The default
+rank sequence visits distinct compositions until its capacity; later trials
+use independent draws, which can repeat. `suggest_composition` works with any
+sampler (TPE, CMA-ES, GP, NSGA-II) through the unit-cube codec:
 
 ```python
 import optuna

@@ -6,6 +6,10 @@ meant to compile unchanged as GPU device code later (CUDA, HIP or SYCL), and
 it is shared by every host thread. So it follows stricter rules than the rest
 of the library.
 
+These rules specialize the repository's [architecture](architecture.md) and
+[coding style](coding-style.md). They apply to kernel headers regardless of
+which build system or caller uses them.
+
 ## Rules
 
 1. Every function is declared `BCOMP_KERNEL`. Today that expands to `inline`; a
@@ -23,17 +27,25 @@ of the library.
    `BCOMP_LOG1P` and `BCOMP_EXPM1` for the logarithmic counting mode. Other
    kernel headers use the macros, which a GPU build can redefine.
 5. Inputs and outputs are views: structs of pointers, sizes and strides that
-   are trivially copyable, so they can be copied to a device as they are.
+   are trivially copyable. Copying a view does not copy its pointees or make
+   host pointers valid on a device: a future device backend must arrange
+   accessible storage and rebind the pointers.
 6. Scratch space has a compile-time bound, `kernel::max_limbs` (set by
    `BCOMP_MAX_LIMBS`, default 64 limbs, so 4096 bits). The host rejects any
-   space that would need more.
+   space that would need more. The compiled host and its kernel consumers
+   must use the same limb budget.
 7. No templates.
 
 ## How they are checked
 
 - `tools/check_kernel.py` scans the headers for rules 2 and 4 and runs as a
   CTest test (`kernel_rules`).
-- The build compiles each kernel header alone with exceptions and RTTI turned
-  off (`bounded_compositions_kernel_standalone`).
+- The CMake build compiles each kernel header alone with exceptions and RTTI
+  turned off (`bounded_compositions_kernel_standalone`).
 - Host code checks rule 5 with `static_assert(std::is_trivially_copyable_v<...>)`.
 - Rules 1, 3 and 7 are checked in review.
+
+The script is registered with CTest when a Python interpreter is found; it
+can also be run directly as described in the coding-style guide. Meson does
+not currently run the script or the standalone-header builds. This gap is
+recorded in the [code review](reviews/2026-10-29.md#r9).
