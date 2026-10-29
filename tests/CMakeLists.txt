@@ -56,6 +56,16 @@ target_link_libraries(bounded_compositions_limit_tests
   PRIVATE bounded_compositions_kernel Threads::Threads Catch2::Catch2WithMain bounded_compositions_warnings)
 catch_discover_tests(bounded_compositions_limit_tests TEST_PREFIX "limit: ")
 
+# Thread start failures, injected by interposing glibc's pthread_create.
+# Sanitizers intercept pthread_create themselves, so their builds skip it.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+  add_executable(bounded_compositions_pool_failure_tests test_pool_failure.cpp)
+  target_link_libraries(bounded_compositions_pool_failure_tests
+    PRIVATE bounded_compositions::bounded_compositions Catch2::Catch2WithMain bounded_compositions_warnings ${CMAKE_DL_LIBS})
+  catch_discover_tests(bounded_compositions_pool_failure_tests TEST_PREFIX "pool failure: "
+    PROPERTIES TIMEOUT 60)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
   add_test(NAME kernel_rules

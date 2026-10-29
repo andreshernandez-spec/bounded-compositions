@@ -238,8 +238,8 @@ Stateful operations must document their commit point. Current behavior:
 - SciPy's `CompositionEngine.random` encodes before moving its cursor, so a
   draw that raises leaves the engine where it was.
 
-Construction must clean up partially acquired resources. Pool construction
-currently violates this (R2). `noexcept` must match the operations performed:
+Construction must clean up partially acquired resources: a pool whose later
+worker fails to start stops and joins the ones already started, then rethrows. `noexcept` must match the operations performed:
 constrained `space::next` currently allocates within `noexcept`, so an
 allocation failure would terminate.
 
