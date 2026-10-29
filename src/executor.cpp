@@ -10,10 +10,19 @@ thread_pool::thread_pool(unsigned threads) {
     if (threads == 0) threads = std::thread::hardware_concurrency();
     if (threads == 0) threads = 1;
     workers_.reserve(threads);
-    for (unsigned i = 0; i < threads; ++i) workers_.emplace_back([this] { work(); });
+    try {
+        for (unsigned i = 0; i < threads; ++i) workers_.emplace_back([this] { work(); });
+    } catch (...) {
+        // No destructor runs for a constructor that throws, and destroying a
+        // joinable thread terminates: stop the workers already started first.
+        stop();
+        throw;
+    }
 }
 
-thread_pool::~thread_pool() {
+thread_pool::~thread_pool() { stop(); }
+
+void thread_pool::stop() noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stopping_ = true;

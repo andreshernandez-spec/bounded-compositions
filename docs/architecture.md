@@ -235,8 +235,8 @@ Stateful operations must document their commit point. Current behavior:
 - Failed SciPy encoding can leave its cursor ahead of `num_generated` (R6).
   This is a defect, not the adapter's intended contract.
 
-Construction must clean up partially acquired resources. Pool construction
-currently violates this (R2). `noexcept` must match the operations performed:
+Construction must clean up partially acquired resources: a pool whose later
+worker fails to start stops and joins the ones already started, then rethrows. `noexcept` must match the operations performed:
 constrained `space::next` currently allocates within `noexcept`, so an
 allocation failure would terminate.
 

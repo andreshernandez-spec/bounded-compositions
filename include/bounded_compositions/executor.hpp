@@ -40,6 +40,8 @@ class serial_executor final : public executor {
 class thread_pool final : public executor {
   public:
     // threads == 0 means std::thread::hardware_concurrency() (at least 1).
+    // If a thread fails to start, the ones already started are stopped and
+    // joined, and the std::system_error is rethrown.
     explicit thread_pool(unsigned threads = 0);
     ~thread_pool() override;
 
@@ -48,6 +50,7 @@ class thread_pool final : public executor {
 
   private:
     void work();
+    void stop() noexcept;
 
     std::vector<std::thread> workers_;
     std::mutex run_mutex_;  // one run() at a time

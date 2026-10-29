@@ -74,5 +74,13 @@ if not meson.is_subproject()
       'tests/fuzz/fuzz_properties.cpp', 'tests/fuzz/fuzz_driver.cpp',
       dependencies: bounded_compositions_dep)
     test('fuzz_smoke', fuzz_smoke, timeout: 300)
+    # Thread start failures, injected by interposing glibc's pthread_create;
+    # sanitizers intercept it themselves.
+    if host_machine.system() == 'linux' and get_option('b_sanitize') == 'none'
+      pool_failure_tests = executable('bounded_compositions_pool_failure_tests',
+        'tests/test_pool_failure.cpp',
+        dependencies: [bounded_compositions_dep, catch2, dependency('dl')])
+      test('pool_failure', pool_failure_tests, timeout: 60)
+    endif
   endif
 endif
