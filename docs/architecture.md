@@ -156,8 +156,8 @@ coordinates.
 
 Repair minimizes squared distance, with ties resolved by the first composition
 in rank order. Redundant counted limits must not change its answer. Current
-cost comparisons can violate this for large finite inputs (R4). The documented
-nearest-double conversion of `natural` has rounding counterexamples (R7).
+cost comparisons can violate this for large finite inputs (R4). `natural`
+converts to the nearest double, ties to even.
 
 ## Ownership and lifetimes
 
