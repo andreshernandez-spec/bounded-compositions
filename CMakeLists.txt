@@ -49,7 +49,8 @@ set(BCOMP_SOURCES
   ${PROJECT_SOURCE_DIR}/src/sobol.cpp
   ${PROJECT_SOURCE_DIR}/src/sobol_directions.cpp
   ${PROJECT_SOURCE_DIR}/src/space.cpp
-  ${PROJECT_SOURCE_DIR}/src/version.cpp)
+  ${PROJECT_SOURCE_DIR}/src/version.cpp
+  ${PROJECT_SOURCE_DIR}/src/walk_batch.cpp)
 add_library(bounded_compositions ${BCOMP_SOURCES})
 add_library(bounded_compositions::bounded_compositions ALIAS bounded_compositions)
 target_link_libraries(bounded_compositions
@@ -89,10 +90,13 @@ endif()
 option(BCOMP_BUILD_BENCH "Build the benchmarks" OFF)
 if(BCOMP_BUILD_BENCH)
   add_executable(bounded_compositions_unrank_bench bench/unrank_bench.cpp)
+  add_executable(bounded_compositions_points_bench bench/points_bench.cpp)
   add_executable(bounded_compositions_sampling_report bench/sampling_report.cpp)
   target_link_libraries(bounded_compositions_sampling_report
     PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
   target_link_libraries(bounded_compositions_unrank_bench PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
+  target_link_libraries(bounded_compositions_points_bench
+    PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
 endif()
 
 if(BCOMP_BUILD_PYTHON)

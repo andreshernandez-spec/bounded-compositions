@@ -12,6 +12,7 @@
 #include "bounded_compositions/kernel/walk.hpp"
 #include "domain.hpp"
 #include "sequence_data.hpp"
+#include "walk_batch.hpp"
 
 namespace bounded_compositions {
 
@@ -28,6 +29,8 @@ constexpr k::limb tag_iid = 0x6969642d73657131u;   // "iid-seq1"
 constexpr k::limb tag_mask = 0x6d61736b2d736571u;  // "mask-seq"
 
 constexpr std::uint64_t block_points = 1024;
+// Points prepared and walked together inside a block (walk_batch.hpp).
+constexpr std::size_t walk_points = 64;
 
 int as_int(std::size_t n) { return static_cast<int>(n); }
 
@@ -95,20 +98,26 @@ void sequence_data::write_decoded_points(std::uint64_t first, std::uint64_t coun
     const std::size_t n = dom.parts();
     const std::size_t d = prefix.size();
     const std::size_t dims = walk.parts() - 1;
-    std::vector<k::limb> u(dims + 4);
-    for (std::uint64_t p = 0; p < count; ++p) {
-        std::int32_t* x = out + p * n;
-        std::copy(prefix.begin(), prefix.end(), x);
-        if (kind == sequence_kind::coordinate) {
-            k::sobol_point(sv, first + p, u.data());
-        } else {  // iid over a logarithmic space: Philox fractions
-            for (std::size_t w = 0; w < dims; w += 4) {
-                const k::limb counter[4] = {first + p, 0, static_cast<k::limb>(w / 4), 0};
-                const k::philox_block b = k::philox4x64_10(counter, key);
-                for (std::size_t j = 0; j < 4; ++j) u[w + j] = b.v[j];
+    // Philox writes whole blocks of four.
+    const std::size_t stride = dims + 4;
+    std::vector<k::limb> u(walk_points * stride);
+    for (std::uint64_t p = 0; p < count; p += walk_points) {
+        const std::size_t m =
+            static_cast<std::size_t>(std::min<std::uint64_t>(walk_points, count - p));
+        for (std::size_t q = 0; q < m; ++q) {
+            k::limb* uq = u.data() + q * stride;
+            std::copy(prefix.begin(), prefix.end(), out + (p + q) * n);
+            if (kind == sequence_kind::coordinate) {
+                k::sobol_point(sv, first + p + q, uq);
+            } else {  // iid over a logarithmic space: Philox fractions
+                for (std::size_t w = 0; w < dims; w += 4) {
+                    const k::limb counter[4] = {first + p + q, 0, static_cast<k::limb>(w / 4), 0};
+                    const k::philox_block b = k::philox4x64_10(counter, key);
+                    for (std::size_t j = 0; j < 4; ++j) uq[w + j] = b.v[j];
+                }
             }
         }
-        if (k::decode(wv, u.data(), x + d) != k::status::ok) {
+        if (decode_points(wv, u.data(), stride, m, out + p * n + d, n) != k::status::ok) {
             throw std::logic_error("bounded_compositions: decode failed in a sequence");
         }
     }
@@ -122,10 +131,13 @@ void sequence_data::write_points(std::uint64_t first, std::uint64_t count,
     }
     const k::space_view sv = dom.view();
     const std::size_t n = dom.parts();
-    std::vector<k::limb> rank(static_cast<std::size_t>(rank_limbs));
-    for (std::uint64_t p = 0; p < count; ++p) {
-        rank_of(first + p, rank.data());
-        if (k::unrank(sv, rank.data(), rank_limbs, out + p * n) != k::status::ok) {
+    const std::size_t width = static_cast<std::size_t>(rank_limbs);
+    std::vector<k::limb> ranks(walk_points * width);
+    for (std::uint64_t p = 0; p < count; p += walk_points) {
+        const std::size_t m =
+            static_cast<std::size_t>(std::min<std::uint64_t>(walk_points, count - p));
+        for (std::size_t q = 0; q < m; ++q) rank_of(first + p + q, ranks.data() + q * width);
+        if (unrank_points(sv, ranks.data(), rank_limbs, m, out + p * n, n) != k::status::ok) {
             throw std::logic_error("bounded_compositions: sequence produced a rank out of range");
         }
     }
