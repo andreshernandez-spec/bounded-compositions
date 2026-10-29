@@ -60,12 +60,28 @@ struct group_limit {
     friend bool operator!=(const group_limit& a, const group_limit& b) { return !(a == b); }
 };
 
+// Values a part may not take: first <= x[part] <= last is excluded. A space
+// keeps its gaps normalized: clipped to the part's bounds, empty ones dropped,
+// sorted by part and first value, and overlapping or adjacent ones merged.
+struct part_gap {
+    std::int32_t part = 0;
+    std::int32_t first = 0;
+    std::int32_t last = 0;
+
+    friend bool operator==(const part_gap& a, const part_gap& b) {
+        return a.part == b.part && a.first == b.first && a.last == b.last;
+    }
+    friend bool operator!=(const part_gap& a, const part_gap& b) { return !(a == b); }
+};
+
 // All x in Z^n with x[0] + ... + x[n-1] = total and lower[i] <= x[i] <= upper[i],
-// within the support and group limits, ordered lexicographically (first part
-// slowest).
+// within the support and group limits and outside the gaps, ordered
+// lexicographically (first part slowest).
 // The limits work in both counting modes: they add a dimension for the number
 // of nonzero parts so far (one layer per allowed count) and split each part's
-// values into the ones below zero, zero, and the ones above.
+// values into segments of allowed values below zero, zero, and above, with
+// semicontinuous and other gaps left out. Gaps cost no table memory; a value
+// in a gap is counted as having no completions.
 //
 // A space is immutable. Copies share the same table, and every member
 // function is safe to call from many threads at once.
@@ -102,6 +118,15 @@ class space {
     space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
           std::size_t parts, const support_limits& support, const std::vector<group_limit>& groups,
           counting mode = counting::exact);
+    // With gaps as well. Also throws std::invalid_argument for a gap whose
+    // part is out of range or whose first value is above its last.
+    space(std::int32_t total, const std::vector<std::int32_t>& lower,
+          const std::vector<std::int32_t>& upper, const support_limits& support,
+          const std::vector<group_limit>& groups, const std::vector<part_gap>& gaps,
+          counting mode = counting::exact);
+    space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
+          std::size_t parts, const support_limits& support, const std::vector<group_limit>& groups,
+          const std::vector<part_gap>& gaps, counting mode = counting::exact);
 
     std::size_t parts() const noexcept;
     std::int32_t total() const noexcept;
@@ -110,6 +135,8 @@ class space {
     // For a subspace, the limits that apply to its own parts.
     const support_limits& support() const noexcept;
     const std::vector<group_limit>& groups() const noexcept;
+    // Normalized (part_gap); for a subspace, the gaps of its own parts.
+    const std::vector<part_gap>& gaps() const noexcept;
 
     counting counting_mode() const noexcept;
     // Number of compositions. Throws std::logic_error for a logarithmic space.
@@ -142,7 +169,7 @@ class space {
     // parts are fixed to prefix: a space of parts() - prefix.size() parts that
     // shares this space's table. Its rank r is rank begin + r here, where
     // begin is the first rank of subtree(*this, prefix). Its total(),
-    // support() and groups() are what is left for the remaining parts, and
+    // support(), groups() and gaps() are what is left for the remaining parts, and
     // describe the same compositions (a space built from them is equal). Throws
     // std::invalid_argument if the prefix leaves no part, breaks a bound, a
     // gap or a group limit, or has no completion, or if the remaining total or

@@ -6,6 +6,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -229,19 +231,40 @@ std::string group_repr(const bc::group_limit& g) {
     return out + ")";
 }
 
+// (part, first, last) triples as gaps.
+std::vector<bc::part_gap> gap_list(nb::handle gaps) {
+    std::vector<bc::part_gap> out;
+    if (gaps.is_none()) return out;
+    for (nb::handle g : gaps) {
+        std::tuple<std::int32_t, std::int32_t, std::int32_t> t;
+        if (!nb::try_cast(g, t)) {
+            throw nb::type_error("gaps must be (part, first, last) triples of int32 values");
+        }
+        out.push_back({std::get<0>(t), std::get<1>(t), std::get<2>(t)});
+    }
+    return out;
+}
+
+nb::list gap_tuples(const std::vector<bc::part_gap>& gaps) {
+    nb::list out;
+    for (const bc::part_gap& g : gaps) out.append(nb::make_tuple(g.part, g.first, g.last));
+    return out;
+}
+
 void construct_space(bc::space* self, std::int32_t total, nb::handle lower, nb::handle upper,
                      std::int32_t min_count, std::optional<std::int32_t> max_count,
                      nb::handle min_size, const std::vector<bc::group_limit>& groups,
-                     const std::string& counting) {
+                     nb::handle gaps, const std::string& counting) {
     const std::vector<std::int32_t> lo = int32_vector(lower, "lower");
     const std::vector<std::int32_t> hi = int32_vector(upper, "upper");
     bc::support_limits support;
     support.min_count = min_count;
     support.max_count = max_count.value_or(no_limit);
     if (!min_size.is_none()) support.min_size = int32_vector(min_size, "min_size");
+    const std::vector<bc::part_gap> excluded = gap_list(gaps);
     const bc::counting mode = counting_mode(counting);
     nb::gil_scoped_release release;  // the table build can take seconds
-    new (self) bc::space(total, lo, hi, support, groups, mode);
+    new (self) bc::space(total, lo, hi, support, groups, excluded, mode);
 }
 
 // Iterates over a space in rank order with first() and next().
@@ -463,12 +486,15 @@ NB_MODULE(_core, m) {
         "upper[i], within the support and group limits, in lexicographic order (first part "
         "slowest).\n\n"
         "min_count and max_count limit the number of nonzero parts; min_size[i] makes part i "
-        "semicontinuous (x[i] == 0 or abs(x[i]) >= min_size[i]); groups limit sums of parts. "
+        "semicontinuous (x[i] == 0 or abs(x[i]) >= min_size[i]); groups limit sums of parts; "
+        "gaps, (part, first, last) triples, exclude first <= x[part] <= last. Gaps are kept "
+        "normalized: clipped to the bounds, sorted, and merged where they overlap or touch. "
         "counting='logarithmic' stores logarithms of the counts, for spaces too large for "
         "exact tables; it has no size, ranks, regions or rank sequences.")
         .def("__init__", &construct_space, "total"_a, "lower"_a, "upper"_a, nb::kw_only(),
              "min_count"_a = 0, "max_count"_a = nb::none(), "min_size"_a = nb::none(),
-             "groups"_a = std::vector<bc::group_limit>(), "counting"_a = "exact")
+             "groups"_a = std::vector<bc::group_limit>(), "gaps"_a = nb::none(),
+             "counting"_a = "exact")
         .def_prop_ro("parts", &bc::space::parts)
         .def_prop_ro("total", &bc::space::total)
         .def_prop_ro("lower", [](const bc::space& s) { return composition(s, s.lower().data()); })
@@ -485,6 +511,9 @@ NB_MODULE(_core, m) {
                          return s.support().min_size;
                      })
         .def_prop_ro("groups", &bc::space::groups)
+        .def_prop_ro(
+            "gaps", [](const bc::space& s) { return gap_tuples(s.gaps()); },
+            "The normalized gaps, as (part, first, last) tuples.")
         .def_prop_ro("counting",
                      [](const bc::space& s) { return counting_name(s.counting_mode()); })
         .def_prop_ro(
@@ -564,17 +593,20 @@ NB_MODULE(_core, m) {
              [](const bc::space& s) {
                  return nb::make_tuple(s.total(), s.lower(), s.upper(), s.support().min_count,
                                        s.support().max_count, s.support().min_size, s.groups(),
-                                       counting_name(s.counting_mode()));
+                                       counting_name(s.counting_mode()), gap_tuples(s.gaps()));
              })
         .def("__setstate__", [](bc::space* self, const nb::tuple& t) {
             bc::support_limits support;
             support.min_count = nb::cast<std::int32_t>(t[3]);
             support.max_count = nb::cast<std::int32_t>(t[4]);
             support.min_size = nb::cast<std::vector<std::int32_t>>(t[5]);
+            // States pickled before gaps existed have eight entries.
+            const std::vector<bc::part_gap> gaps =
+                t.size() > 8 ? gap_list(t[8]) : std::vector<bc::part_gap>();
             new (self)
                 bc::space(nb::cast<std::int32_t>(t[0]), nb::cast<std::vector<std::int32_t>>(t[1]),
                           nb::cast<std::vector<std::int32_t>>(t[2]), support,
-                          nb::cast<std::vector<bc::group_limit>>(t[6]),
+                          nb::cast<std::vector<bc::group_limit>>(t[6]), gaps,
                           counting_mode(nb::cast<std::string>(t[7])));
         });
 

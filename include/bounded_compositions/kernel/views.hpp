@@ -13,10 +13,12 @@ namespace kernel {
 // A space after shifting every lower bound to 0: part i takes values
 // 0..cap[i] and the shifted values sum to `total`.
 //
-// Limits (space.hpp) narrow this. A part's allowed values are up to three
-// segments, seg[9 i + 3 g .. + 2] = (first, last, step) for g < segs[i], in
-// increasing order: the values below zero, zero itself, and the values above,
-// with a semicontinuous part's gap left out.
+// Limits (space.hpp) narrow this. A part's allowed values are segments,
+// seg[3 (seg_start[i] + g) .. + 2] = (first, last, step) for g < segs[i], in
+// increasing order and split at zero: the values below zero, zero itself, and
+// the values above, with gaps (semicontinuous or given) left out. The step is
+// what a value moves the support count by: 0 for zero and when the count is
+// not limited, 1 otherwise.
 //
 // The state before part i is (k, layer): k is what is left to place, and the
 // layer is a mixed-radix number holding the nonzero parts so far (the support
@@ -40,8 +42,9 @@ namespace kernel {
 // offset row_offset[i], holds row_layers[i] blocks of table_k entries, and
 // stores each entry in row_limbs[i] limbs. N[n][0][c] is 1 when
 // count_min <= c <= count_max and every other N[n] entry is 0. A subspace
-// shares its parent's table: layer_base is the layer after its prefix and
-// table_k the parent's total + 1.
+// shares its parent's table and segments: layer_base is the layer after its
+// prefix, table_k the parent's total + 1, and seg_start holds the parent's
+// offsets.
 //
 // In the logarithmic counting mode there is no limb table (table, row_offset,
 // row_limbs and size are null). Instead log_prefix and log_suffix hold, for
@@ -69,8 +72,9 @@ struct space_view {
     const double* log_prefix;
     const double* log_suffix;
     std::int64_t log_stride;
-    const std::int32_t* seg;   // 9 per part: up to three (first, last, step)
-    const std::int32_t* segs;  // n entries, 0 to 3
+    const std::int32_t* seg;        // (first, last, step) per segment
+    const std::int32_t* seg_start;  // n entries, part i's first segment in seg
+    const std::int32_t* segs;       // n entries, part i's number of segments
     std::int32_t support_layers;
     std::int32_t layer_base;
     std::int32_t count_min;

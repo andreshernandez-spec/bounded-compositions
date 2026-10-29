@@ -67,8 +67,10 @@ and throws `std::invalid_argument` for a region of another space. Region
 equality compares endpoints and domains.
 
 The current `detail::same_space` check compares total, ordered bounds, support
-limits and ordered group descriptions. It does not prove equivalence of
-differently expressed constraints. Operations using exact ranks also require
+limits, ordered group descriptions and gaps. Gaps are normalized when a space
+is built, so differently written gaps for the same values compare equal; the
+check does not otherwise prove equivalence of differently expressed
+constraints. Operations using exact ranks also require
 exact counting. Changes to compatibility must preserve agreement among
 regions, sequences and visited sets.
 
@@ -118,8 +120,10 @@ alone is not always enough for its calculation. `BCOMP_MAX_LIMBS` bounds
 kernel stack scratch, defaulting to 64 limbs. The compiled host and kernel
 consumers must use the same setting.
 
-Support limits split allowed values into at most three segments: negative,
-zero and positive, with semicontinuous gaps removed. Layers encode the nonzero
+Each part's allowed values are segments: the bounds split at zero into
+negative, zero and positive values, with semicontinuous gaps and given gaps
+removed, so a part has at most three segments plus one per gap. A gap costs
+no table memory: its values are never walked. Layers encode the nonzero
 count and sums of groups spanning the row. A group coordinate may store its
 running sum plus the remaining total, so every value in a segment can lead
 to the same next layer and counts remain prefix-sum windows. The layout is

@@ -71,6 +71,7 @@ if not meson.is_subproject() and not get_option('tests').disabled()
       'tests/test_coordinate.cpp',
       'tests/test_executor.cpp',
       'tests/test_fresh.cpp',
+      'tests/test_gaps.cpp',
       'tests/test_groups.cpp',
       'tests/test_limbs.cpp',
       'tests/test_log_counting.cpp',

@@ -26,13 +26,13 @@ namespace kernel {
 // Segment g of part i: allowed shifted values first..last, moving the support
 // count by step (views.hpp).
 BCOMP_KERNEL std::int32_t seg_first(const space_view& s, int i, int g) {
-    return s.seg[9 * i + 3 * g];
+    return s.seg[3 * (s.seg_start[i] + g)];
 }
 BCOMP_KERNEL std::int32_t seg_last(const space_view& s, int i, int g) {
-    return s.seg[9 * i + 3 * g + 1];
+    return s.seg[3 * (s.seg_start[i] + g) + 1];
 }
 BCOMP_KERNEL std::int32_t seg_step(const space_view& s, int i, int g) {
-    return s.seg[9 * i + 3 * g + 2];
+    return s.seg[3 * (s.seg_start[i] + g) + 2];
 }
 
 // The values of segment g of part i that the limits allow from state
@@ -521,18 +521,23 @@ BCOMP_KERNEL bool log_part_window(const space_view& s, int i, std::int32_t k, st
     double f = unit_fraction(u);
     int g = 0;
     if (s.segs[i] > 1) {
-        double mass[3] = {log_zero, log_zero, log_zero};
+        // Two passes over the segments; the first few masses are kept, the
+        // rest summed again, so a part may have any number of segments.
+        const int kept = 8;
+        double masses[kept];
         double whole = log_zero;
         for (int h = 0; h < s.segs[i]; ++h) {
-            mass[h] = log_segment(s, i, h, k, c);
-            whole = log_add(whole, mass[h]);
+            const double mass = log_segment(s, i, h, k, c);
+            if (h < kept) masses[h] = mass;
+            whole = log_add(whole, mass);
         }
         g = -1;
         int last = -1;
         for (int h = 0; h < s.segs[i]; ++h) {
-            if (log_is_zero(mass[h])) continue;
+            const double mass = h < kept ? masses[h] : log_segment(s, i, h, k, c);
+            if (log_is_zero(mass)) continue;
             last = h;
-            const double share = BCOMP_EXP(mass[h] - whole);
+            const double share = BCOMP_EXP(mass - whole);
             if (f < share) {
                 g = h;
                 f /= share;

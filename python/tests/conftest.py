@@ -4,11 +4,14 @@ import random
 import pytest
 
 
-def brute_force(total, lower, upper, min_count=0, max_count=None, min_size=None, groups=()):
+def brute_force(total, lower, upper, min_count=0, max_count=None, min_size=None, groups=(),
+                gaps=None):
     """Every composition, in lexicographic order, by plain enumeration."""
     out = []
     for x in itertools.product(*(range(a, b + 1) for a, b in zip(lower, upper))):
         if sum(x) != total:
+            continue
+        if any(first <= x[part] <= last for part, first, last in gaps or ()):
             continue
         nonzero = sum(v != 0 for v in x)
         if nonzero < min_count or (max_count is not None and nonzero > max_count):
