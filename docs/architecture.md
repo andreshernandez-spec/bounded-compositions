@@ -256,8 +256,9 @@ allocation failure would terminate.
 
 Existing CMake tests, sanitizer presets, Python tests and fuzz properties
 cover much of this. With `-Dtests=enabled`, as in CI, Meson fails its setup
-without Catch2, and it runs the kernel checker and standalone header builds. Fuzzer coverage reaches the harness but omits
-the compiled host (R10). Formatting has no CI gate yet (R11).
+without Catch2, and it runs the kernel checker and standalone header builds.
+The libFuzzer target links a copy of the host library built with coverage.
+Formatting has no CI gate yet (R11).
 
 Known runtime deviations at reviewed commit `44b026a` are R1 region validation,
 R2 pool construction, R3 subspace metadata, R4 repair precision, R5 codec

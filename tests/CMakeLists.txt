@@ -37,19 +37,7 @@ catch_discover_tests(bounded_compositions_tests)
 
 # The library rebuilt with a two-limb kernel budget, so the limit is testable
 # with small tables.
-add_executable(bounded_compositions_limit_tests
-  test_limits.cpp
-  ${PROJECT_SOURCE_DIR}/src/codec.cpp
-  ${PROJECT_SOURCE_DIR}/src/executor.cpp
-  ${PROJECT_SOURCE_DIR}/src/fresh.cpp
-  ${PROJECT_SOURCE_DIR}/src/natural.cpp
-  ${PROJECT_SOURCE_DIR}/src/region.cpp
-  ${PROJECT_SOURCE_DIR}/src/repair.cpp
-  ${PROJECT_SOURCE_DIR}/src/sequence.cpp
-  ${PROJECT_SOURCE_DIR}/src/sobol.cpp
-  ${PROJECT_SOURCE_DIR}/src/sobol_directions.cpp
-  ${PROJECT_SOURCE_DIR}/src/space.cpp
-  ${PROJECT_SOURCE_DIR}/src/version.cpp)
+add_executable(bounded_compositions_limit_tests test_limits.cpp ${BCOMP_SOURCES})
 target_compile_definitions(bounded_compositions_limit_tests PRIVATE
   BCOMP_MAX_LIMBS=2 BCOMP_VERSION_STRING="${PROJECT_VERSION}")
 target_link_libraries(bounded_compositions_limit_tests
@@ -76,10 +64,17 @@ endif()
 # Fuzz properties: a seeded smoke run everywhere, real libFuzzer with Clang.
 option(BCOMP_FUZZ "Build the libFuzzer target (Clang only)" OFF)
 if(BCOMP_FUZZ)
+  # The library rebuilt with coverage, so libFuzzer can follow the host code
+  # and not only the harness; the fuzzer runtime is linked into the executable.
+  add_library(bounded_compositions_fuzz_lib STATIC ${BCOMP_SOURCES})
+  target_compile_options(bounded_compositions_fuzz_lib PRIVATE -fsanitize=fuzzer-no-link,address,undefined)
+  target_compile_definitions(bounded_compositions_fuzz_lib PRIVATE BCOMP_VERSION_STRING="${PROJECT_VERSION}")
+  target_link_libraries(bounded_compositions_fuzz_lib
+    PUBLIC bounded_compositions_kernel Threads::Threads PRIVATE bounded_compositions_warnings)
   add_executable(bounded_compositions_fuzz fuzz/fuzz_properties.cpp)
   target_compile_options(bounded_compositions_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
   target_link_options(bounded_compositions_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
-  target_link_libraries(bounded_compositions_fuzz PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
+  target_link_libraries(bounded_compositions_fuzz PRIVATE bounded_compositions_fuzz_lib bounded_compositions_warnings)
 else()
   add_executable(bounded_compositions_fuzz_smoke fuzz/fuzz_properties.cpp fuzz/fuzz_driver.cpp)
   target_link_libraries(bounded_compositions_fuzz_smoke PRIVATE bounded_compositions::bounded_compositions bounded_compositions_warnings)
