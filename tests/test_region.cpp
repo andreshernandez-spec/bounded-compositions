@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <random>
 #include <stdexcept>
@@ -341,4 +342,35 @@ TEST_CASE("region sequences stay inside the region and follow the space's order"
         CHECK(next == in_region.capacity());
     }
     CHECK_THROWS_AS(bc::rank_sequence(sub, t), std::out_of_range);  // t lies past sub's ranks
+}
+
+TEST_CASE("a subspace that int32 cannot describe is rejected") {
+    const std::int32_t least = std::numeric_limits<std::int32_t>::min();
+    const std::int32_t most = std::numeric_limits<std::int32_t>::max();
+    // The remaining total, 2 * most, does not fit.
+    const composition fixed{least, most, most};
+    const bc::space s(most - 1, fixed, fixed);
+    REQUIRE(s.size() == natural(1));
+    CHECK_THROWS_AS(s.subspace(composition{least}), std::invalid_argument);
+    // A group's limits for the remaining parts (2.6e9) do not fit, although
+    // the remaining total does.
+    const composition x{-2000000000, 1300000000, 1300000000, -2000000000};
+    const bc::space g(-1400000000, x, x, bc::support_limits{},
+                      {bc::group_limit{{0, 1, 2}, 600000000, 600000000}});
+    REQUIRE(g.size() == natural(1));
+    CHECK_THROWS_AS(g.subspace(composition{-2000000000}), std::invalid_argument);
+    // A limit out of int32 that the remaining parts cannot reach becomes the
+    // nearest int32, and an absent limit stays absent.
+    const bc::space h(0, composition{-2000000000, 0, 1999999990},
+                      composition{-1999999998, 4, 2000000000}, bc::support_limits{},
+                      {bc::group_limit{{0, 1}, least, 200000000}});
+    const bc::space sub = h.subspace(composition{-2000000000});
+    REQUIRE(sub.groups().size() == 1);
+    CHECK(sub.groups()[0].min_sum == least);
+    CHECK(sub.groups()[0].max_sum == most);  // 2.2e9, above the remaining part's 4
+    const bc::space rebuilt(sub.total(), sub.lower(), sub.upper(), sub.support(), sub.groups());
+    REQUIRE(rebuilt.size() == sub.size());
+    for (std::uint64_t r = 0; r < sub.size().to_u64(); ++r) {
+        CHECK(rebuilt.unrank(natural(r)) == sub.unrank(natural(r)));
+    }
 }

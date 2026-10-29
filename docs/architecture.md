@@ -94,7 +94,8 @@ Widen operands before arithmetic, then check before narrowing, multiplying
 allocation dimensions or computing offsets. Saturation must not change a
 feasible set; reject an unsupported representation explicitly. Subspace
 metadata must reconstruct the same set as its table, including after Python
-pickling. Review R3 and R8 identify violations.
+pickling: `space::subspace` computes the remaining total and group limits in
+64 bits and rejects a prefix that int32 metadata cannot describe.
 
 Exact tables store prefix sums of suffix counts in flat row-major limb arrays:
 

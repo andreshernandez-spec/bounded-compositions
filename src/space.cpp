@@ -586,17 +586,33 @@ void check_same_length(std::size_t lower, std::size_t upper) {
     }
 }
 
-// A limit shifted by what the prefix already holds, saturating at the
-// int32 range so that an absent limit stays absent.
-std::int32_t shift_limit(std::int32_t limit, std::int64_t taken) {
-    if (limit == std::numeric_limits<std::int32_t>::min() ||
-        limit == std::numeric_limits<std::int32_t>::max()) {
-        return limit;
+// A group limit on the members after a prefix whose members hold `taken`.
+// The table applies limit - taken, a real limit even at the int32 extremes
+// (the absent value). Another int32 value describes the same set when no sum
+// of the remaining members, all in [low, high], lies between the two: then an
+// absent limit stays absent, and a value outside int32 takes the nearest
+// int32. Throws std::invalid_argument when no int32 value does.
+std::int32_t remaining_limit(std::int32_t limit, std::int64_t taken, std::int64_t low,
+                             std::int64_t high, bool is_max) {
+    const std::int64_t least = std::numeric_limits<std::int32_t>::min();
+    const std::int64_t most = std::numeric_limits<std::int32_t>::max();
+    const std::int64_t exact = std::int64_t{limit} - taken;
+    // Of two max_sum values a < b only b allows the sums in (a, b]; of two
+    // min_sum values only a allows [a, b).
+    auto same = [&](std::int64_t other) {
+        const std::int64_t a = std::min(exact, other), b = std::max(exact, other);
+        return a == b || (is_max ? b < low || a >= high : b <= low || a > high);
+    };
+    const std::int64_t absent = is_max ? most : least;
+    if (limit == absent && same(absent)) return limit;
+    const std::int64_t near = std::clamp(exact, least, most);
+    if (!same(near)) {
+        throw std::invalid_argument(
+            std::string("bounded_compositions::space::subspace: a group's ") +
+            (is_max ? "max_sum" : "min_sum") + " for the remaining parts, " +
+            std::to_string(exact) + ", does not fit in int32");
     }
-    const std::int64_t out = std::int64_t{limit} - taken;
-    return static_cast<std::int32_t>(
-        std::clamp<std::int64_t>(out, std::numeric_limits<std::int32_t>::min() + std::int64_t{1},
-                                 std::numeric_limits<std::int32_t>::max() - std::int64_t{1}));
+    return static_cast<std::int32_t>(near);
 }
 
 }  // namespace
@@ -689,7 +705,15 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
         prefix_sum += prefix[i];
     }
     const int row = static_cast<int>(d);
-    // The limits on the parts left.
+    // The total and limits on the parts left, which must describe the same
+    // set as the table: Python pickles a subspace as them.
+    const std::int64_t rest_total = std::int64_t{data_->total} - prefix_sum;
+    if (rest_total < std::numeric_limits<std::int32_t>::min() ||
+        rest_total > std::numeric_limits<std::int32_t>::max()) {
+        throw std::invalid_argument(
+            "bounded_compositions::space::subspace: the total for the remaining parts, " +
+            std::to_string(rest_total) + ", does not fit in int32");
+    }
     support_limits rest = data_->support;
     rest.min_count = std::max(0, rest.min_count - nonzero);
     if (rest.max_count != std::numeric_limits<std::int32_t>::max()) rest.max_count -= nonzero;
@@ -700,24 +724,27 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
     std::vector<group_limit> rest_groups;
     for (const group_limit& gl : data_->groups) {
         group_limit out;
-        std::int64_t taken = 0;
+        std::int64_t taken = 0, low = 0, high = 0;
         for (std::int32_t p : gl.parts) {
-            if (static_cast<std::size_t>(p) < d) {
-                taken += prefix[static_cast<std::size_t>(p)];
+            const std::size_t u = static_cast<std::size_t>(p);
+            if (u < d) {
+                taken += prefix[u];
             } else {
                 out.parts.push_back(p - static_cast<std::int32_t>(d));
+                low += data_->lower[u];
+                high += data_->upper[u];
             }
         }
         if (out.parts.empty()) continue;
-        out.min_sum = shift_limit(gl.min_sum, taken);
-        out.max_sum = shift_limit(gl.max_sum, taken);
+        out.min_sum = remaining_limit(gl.min_sum, taken, low, high, false);
+        out.max_sum = remaining_limit(gl.max_sum, taken, low, high, true);
         rest_groups.push_back(std::move(out));
     }
 
     auto sub = std::make_shared<detail::space_data>();
     sub->parent = data_;
     sub->mode = data_->mode;
-    sub->total = static_cast<std::int32_t>(data_->total - prefix_sum);
+    sub->total = static_cast<std::int32_t>(rest_total);
     sub->lower.assign(data_->lower.begin() + static_cast<std::ptrdiff_t>(d), data_->lower.end());
     sub->upper.assign(data_->upper.begin() + static_cast<std::ptrdiff_t>(d), data_->upper.end());
     sub->support = rest;

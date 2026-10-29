@@ -354,6 +354,72 @@ TEST_CASE("rank sequences cover a grouped space and iid draws are uniform") {
     CHECK(chi2 < limit);
 }
 
+TEST_CASE("subspaces near the int32 extremes describe their compositions or are rejected") {
+    const std::int64_t least = std::numeric_limits<std::int32_t>::min();
+    const std::int64_t most = std::numeric_limits<std::int32_t>::max();
+    std::mt19937_64 rng(77);
+    auto pick = [&](std::int64_t a, std::int64_t b) {
+        return std::uniform_int_distribution<std::int64_t>(a, b)(rng);
+    };
+    auto i32 = [](std::int64_t v) { return static_cast<std::int32_t>(v); };
+    int checked = 0, rejected = 0;
+    for (int trial = 0; trial < 3000; ++trial) {
+        const std::size_t n = static_cast<std::size_t>(pick(2, 4));
+        composition lo(n), hi(n), x(n);
+        std::int64_t total = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::int64_t where = pick(0, 2);
+            const std::int64_t a = where == 0   ? pick(least, least + 5)
+                                   : where == 1 ? pick(most - 8, most - 3)
+                                                : pick(-5, 5);
+            lo[i] = i32(a);
+            hi[i] = i32(a + pick(0, 3));
+            x[i] = i32(pick(lo[i], hi[i]));
+            total += x[i];
+        }
+        if (total < least || total > most) continue;
+        // One group around x's sum over its parts: limits absent, or a little
+        // off that sum and clamped to int32.
+        bc::group_limit g;
+        std::int64_t at = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (pick(0, 1) == 1) continue;
+            g.parts.push_back(static_cast<std::int32_t>(i));
+            at += x[i];
+        }
+        if (g.parts.empty()) continue;
+        if (pick(0, 1) == 1) g.min_sum = i32(std::clamp(at - pick(0, 4), least, most));
+        if (pick(0, 1) == 1) g.max_sum = i32(std::clamp(at + pick(0, 4), least, most));
+        if (g.min_sum > g.max_sum) continue;
+        const bc::space s(i32(total), lo, hi, bc::support_limits{}, {g});
+        std::vector<composition> all;
+        composition y(n);
+        for (bool more = s.first(y.data()); more; more = s.next(y.data())) all.push_back(y);
+        for (const composition& z : all) {
+            for (std::size_t d = 1; d < n; ++d) {
+                const composition prefix(z.begin(), z.begin() + static_cast<long>(d));
+                bool made = false;
+                try {
+                    const bc::space sub = s.subspace(prefix);
+                    made = true;
+                    const bc::space rebuilt(sub.total(), sub.lower(), sub.upper(), sub.support(),
+                                            sub.groups());
+                    REQUIRE(rebuilt.size() == sub.size());
+                    for (std::uint64_t r = 0; r < sub.size().to_u64(); ++r) {
+                        REQUIRE(rebuilt.unrank(natural(r)) == sub.unrank(natural(r)));
+                    }
+                    ++checked;
+                } catch (const std::invalid_argument&) {
+                    REQUIRE(!made);
+                    ++rejected;
+                }
+            }
+        }
+    }
+    CHECK(checked > 1000);
+    CHECK(rejected > 10);
+}
+
 TEST_CASE("group limits are validated and their cost is bounded") {
     const composition lo(4, 0), hi(4, 5);
     const bc::support_limits none;

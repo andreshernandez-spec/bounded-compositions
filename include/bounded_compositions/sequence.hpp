@@ -136,7 +136,8 @@ sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
 sequence coordinate_sequence(const space& s);
 sequence coordinate_sequence(const space& s, std::uint64_t scramble_seed);
 // Restricted to a subtree: the prefix is fixed and the Sobol points cover the
-// remaining parts. Throws std::invalid_argument if the region is not a subtree.
+// remaining parts. Throws std::invalid_argument if the region is not a subtree
+// of s, or if s.subspace(prefix) throws.
 sequence coordinate_sequence(const space& s, const region& subtree);
 sequence coordinate_sequence(const space& s, const region& subtree, std::uint64_t scramble_seed);
 

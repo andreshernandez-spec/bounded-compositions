@@ -141,10 +141,13 @@ class space {
     // The compositions of the remaining parts once the first prefix.size()
     // parts are fixed to prefix: a space of parts() - prefix.size() parts that
     // shares this space's table. Its rank r is rank begin + r here, where
-    // begin is the first rank of subtree(*this, prefix). Its support() and
-    // groups() are what the limits leave for the remaining parts. Throws
+    // begin is the first rank of subtree(*this, prefix). Its total(),
+    // support() and groups() are what is left for the remaining parts, and
+    // describe the same compositions (a space built from them is equal). Throws
     // std::invalid_argument if the prefix leaves no part, breaks a bound, a
-    // gap or a group limit, or has no completion.
+    // gap or a group limit, or has no completion, or if the remaining total or
+    // a group limit for the remaining parts needs more than int32 (only near
+    // the int32 extremes).
     space subspace(const std::vector<std::int32_t>& prefix) const;
 
     // Kernel view of this space. Valid while this space or a copy of it lives.

@@ -69,6 +69,24 @@ def test_pickle_round_trip():
     assert back.size == s.size and back.groups == s.groups and back.min_count == 2
 
 
+def test_subspaces_pickle_as_the_same_space():
+    x = [-2000000000, 1300000000, 1300000000, -2000000000]
+    group = bc.Group([0, 1, 2], min_sum=600000000, max_sum=600000000)
+    s = bc.Space(-1400000000, x, x, groups=[group])
+    with pytest.raises(ValueError, match="does not fit in int32"):
+        s.subspace([-2000000000])  # the remaining group sums to 2.6e9
+    fixed = [-(2**31), 2**31 - 1, 2**31 - 1]
+    with pytest.raises(ValueError, match="does not fit in int32"):
+        bc.Space(2**31 - 2, fixed, fixed).subspace([-(2**31)])
+    g = bc.Group([0, 2], max_sum=9)
+    s = bc.Space(12, [-2] * 5, [6] * 5, min_count=2, groups=[g, bc.Group([1, 3], min_sum=1)])
+    for prefix in ([3], [-2, 6], [0, 0, 4]):
+        sub = s.subspace(prefix)
+        back = pickle.loads(pickle.dumps(sub))
+        assert back.size == sub.size
+        assert [y.tolist() for y in back] == [y.tolist() for y in sub]
+
+
 def test_bad_input():
     with pytest.raises(TypeError):
         bc.Space(5, [0, 0], [2.5, 3])
