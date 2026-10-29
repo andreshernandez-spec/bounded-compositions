@@ -22,6 +22,24 @@ def test_codes_decode_to_the_sequence(wide, kind):
     assert (eng.sequence.points(0, 300) == x).all()
 
 
+def test_a_failed_draw_leaves_the_engine_where_it_was(small, monkeypatch):
+    import bounded_compositions.scipy as adapter
+
+    eng = CompositionEngine(small, rng=7)
+    first = eng.random(10)
+
+    def no_code(*args, **kwargs):
+        raise ValueError("no double decodes to the value of part 0")
+
+    monkeypatch.setattr(adapter, "encode", no_code)
+    with pytest.raises(ValueError):
+        eng.random(5)
+    assert eng.num_generated == 10 and eng.sequence.position == 10
+    monkeypatch.undo()
+    whole = CompositionEngine(small, rng=7).random(15)
+    assert np.array_equal(np.vstack([first, eng.random(5)]), whole)
+
+
 def test_extending_and_fast_forward(small):
     eng = CompositionEngine(small, rng=7)
     whole = eng.random(100)

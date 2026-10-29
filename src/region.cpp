@@ -8,6 +8,7 @@
 
 #include "bounded_compositions/kernel/walk.hpp"
 #include "counts.hpp"
+#include "domain.hpp"
 
 namespace bounded_compositions {
 
@@ -79,11 +80,33 @@ std::vector<std::int32_t> common_prefix(const std::vector<std::int32_t>& a,
 
 }  // namespace
 
-region::region(natural begin, natural end, std::vector<std::int32_t> prefix, bool subtree)
-    : begin_(std::move(begin)),
+namespace detail {
+
+bool same_space(const space& a, const space& b) {
+    return a.total() == b.total() && a.lower() == b.lower() && a.upper() == b.upper() &&
+           a.support() == b.support() && a.groups() == b.groups();
+}
+
+void require_domain(const space& s, const region& r, const char* what) {
+    if (!same_space(s, r.domain())) {
+        throw std::invalid_argument(std::string("bounded_compositions::") + what +
+                                    ": the region belongs to another space");
+    }
+}
+
+}  // namespace detail
+
+region::region(space domain, natural begin, natural end, std::vector<std::int32_t> prefix,
+               bool subtree)
+    : domain_(std::move(domain)),
+      begin_(std::move(begin)),
       end_(std::move(end)),
       prefix_(std::move(prefix)),
       subtree_(subtree) {}
+
+bool operator==(const region& a, const region& b) {
+    return a.begin_ == b.begin_ && a.end_ == b.end_ && detail::same_space(a.domain_, b.domain_);
+}
 
 region interval(const space& s, const natural& begin, const natural& end) {
     require_exact(s, "interval");
@@ -92,14 +115,14 @@ region interval(const space& s, const natural& begin, const natural& end) {
                                 end.to_string() + ") is not within [0, " + s.size().to_string() +
                                 ")");
     }
-    if (begin == end) return region(begin, end, {}, false);
+    if (begin == end) return region(s, begin, end, {}, false);
     std::vector<std::int32_t> first = s.unrank(begin);
     const std::vector<std::int32_t> last = s.unrank(end - natural(1));
     std::vector<std::int32_t> shared = common_prefix(first, last);
     // The smallest subtree holding the interval is the one of the shared prefix.
     const prefix_place p = place_prefix(s, shared);
     const bool subtree = p.begin == begin && p.begin + p.size == end;
-    return region(begin, end, std::move(shared), subtree);
+    return region(s, begin, end, std::move(shared), subtree);
 }
 
 region whole(const space& s) { return interval(s, natural(), s.size()); }
@@ -112,6 +135,7 @@ region subtree(const space& s, const std::vector<std::int32_t>& prefix) {
 }
 
 std::vector<region> children(const space& s, const region& r) {
+    detail::require_domain(s, r, "children");
     if (r.empty()) return {};
     if (!r.is_subtree()) {
         throw std::invalid_argument("bounded_compositions::children: region is not a subtree");
@@ -138,6 +162,7 @@ std::vector<region> children(const space& s, const region& r) {
 }
 
 std::vector<region> split(const space& s, const region& r, std::uint32_t pieces) {
+    detail::require_domain(s, r, "split");
     if (pieces == 0) throw std::invalid_argument("bounded_compositions::split: zero pieces");
     const natural size = r.size();
     std::vector<region> out;
@@ -157,6 +182,7 @@ std::vector<region> dyadic_split(const space& s, const region& r, int levels) {
     if (levels < 0 || levels > 24) {
         throw std::invalid_argument("bounded_compositions::dyadic_split: levels must be 0..24");
     }
+    detail::require_domain(s, r, "dyadic_split");
     if (r.empty()) return {};
     // rho: bits where the first and last ranks differ, so [a 2^rho, (a+1) 2^rho)
     // is the smallest aligned block holding r.
@@ -193,6 +219,7 @@ std::vector<region> dyadic_split(const space& s, const region& r, int levels) {
 }
 
 std::vector<part_range> describe(const space& s, const region& r) {
+    detail::require_domain(s, r, "describe");
     if (r.empty()) return {};
     const k::space_view v = s.view();
     const std::size_t n = s.parts();

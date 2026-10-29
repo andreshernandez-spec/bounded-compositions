@@ -193,6 +193,62 @@ TEST_CASE("the greedy repair agrees with the state search on a larger space") {
     }
 }
 
+TEST_CASE("repair ignores a common offset and a redundant limit") {
+    // The review's case: [1, 1] for both, at 2 below [0, 2]; the group made
+    // the state search answer [0, 2], and at 1e200 overflow in it.
+    const bc::space two(2, composition{0, 0}, composition{2, 2});
+    const bc::space two_grouped(2, composition{0, 0}, composition{2, 2}, bc::support_limits{},
+                                {bc::group_limit{{0, 1}}});
+    for (double offset : {1e12, 1e200}) {
+        const std::vector<double> z{offset, offset};
+        CHECK(bc::repair(two, z) == composition{1, 1});
+        CHECK(bc::repair(two_grouped, z) == composition{1, 1});
+    }
+    // Random spaces and z = offset + w, with w on a grid of 1/8. z[i] - z[0]
+    // is exact (the values share an exponent, or are small), so brute force
+    // on those differences is the exact answer, ties included.
+    std::mt19937 rng(11);
+    int checked = 0;
+    for (const case_& c : random_cases(300, 12, false)) {
+        if (c.lo.size() < 2) continue;
+        const bc::space s(c.total, c.lo, c.hi);
+        if (s.empty()) continue;
+        bc::group_limit all;
+        for (std::size_t p = 0; p < c.lo.size(); ++p) all.parts.push_back(static_cast<int>(p));
+        const bc::space grouped(c.total, c.lo, c.hi, bc::support_limits{}, {all});
+        const std::vector<double> w = random_z(c, rng, false);
+        for (double offset : {0.0, 1e6, 1e12, 1e15, 1e100, 1e200, -1e300}) {
+            std::vector<double> z(w.size()), exact(w.size());
+            for (std::size_t i = 0; i < w.size(); ++i) z[i] = offset + std::round(w[i] * 8) / 8;
+            for (std::size_t i = 0; i < w.size(); ++i) exact[i] = z[i] - z[0];
+            const composition want = nearest(s, exact).front();
+            INFO("offset " << offset);
+            REQUIRE(bc::repair(s, z) == want);
+            REQUIRE(bc::repair(grouped, z) == want);
+        }
+        ++checked;
+    }
+    CHECK(checked > 200);
+}
+
+TEST_CASE("repair compares z spread past the range of squares") {
+    // Part 0 wants its upper bound and part 3 its lower one, whatever the
+    // others do; parts 1 and 2 split the rest by their own distances.
+    const composition lo(4, 0), hi(4, 3);
+    bc::group_limit all{{0, 1, 2, 3},
+                        std::numeric_limits<std::int32_t>::min(),
+                        std::numeric_limits<std::int32_t>::max()};
+    const bc::space s(6, lo, hi);
+    const bc::space grouped(6, lo, hi, bc::support_limits{}, {all});
+    const double most = std::numeric_limits<double>::max();
+    for (double far : {1e160, 1e300, most}) {
+        const std::vector<double> z{far, 0.4, 1.6, -far};
+        INFO("far " << far);
+        CHECK(bc::repair(s, z) == composition{3, 1, 2, 0});
+        CHECK(bc::repair(grouped, z) == composition{3, 1, 2, 0});
+    }
+}
+
 TEST_CASE("repair rejects empty spaces and bad input") {
     const bc::space none(50, composition(3, 0), composition(3, 5));
     CHECK_THROWS_AS(bc::repair(none, std::vector<double>(3, 1.0)), std::invalid_argument);

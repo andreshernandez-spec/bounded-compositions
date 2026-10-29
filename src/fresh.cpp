@@ -8,6 +8,7 @@
 #include "bounded_compositions/kernel/limbs.hpp"
 #include "bounded_compositions/kernel/walk.hpp"
 #include "bounded_compositions/region.hpp"
+#include "domain.hpp"
 #include "sequence_data.hpp"
 
 namespace bounded_compositions {

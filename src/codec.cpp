@@ -26,6 +26,81 @@ natural scaled(const natural& n, std::uint64_t u) {
     return natural::from_limbs(wide.data() + 1, n.limb_count());
 }
 
+// The smallest u with floor(n * u / 2^64) >= target, if there is one.
+bool first_code(const natural& n, const natural& target, std::uint64_t& u) {
+    std::uint64_t lo = 0, hi = std::numeric_limits<std::uint64_t>::max();
+    if (scaled(n, hi) < target) return false;
+    while (lo < hi) {
+        const std::uint64_t mid = lo + (hi - lo) / 2;
+        if (scaled(n, mid) >= target) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    u = lo;
+    return true;
+}
+
+// Part i's cell in exact mode: decode reads u[i] as position
+// floor(count * u[i] / 2^64) among the count completions left, and the
+// positions [below, end) give x[i]. Codes that decode into a cell are a range,
+// since that position grows with u.
+struct cell {
+    natural count;
+    natural below;
+    natural end;
+
+    bool holds(std::uint64_t u) const {
+        const natural at = scaled(count, u);
+        return below <= at && at < end;
+    }
+};
+
+std::vector<cell> cells_of(const space& s, const std::int32_t* x) {
+    const k::space_view v = s.view();
+    std::vector<cell> out;
+    std::int32_t left = v.total;
+    std::int32_t layer = v.layer_base;
+    for (int i = 0; i < dims_of(s); ++i) {
+        const std::int32_t y = x[i] - v.lo[i];
+        const std::int32_t next = k::layer_after(v, i, left, layer, y);
+        cell c{detail::completions_of(v, i, layer, left), detail::below_of(v, i, left, layer, y),
+               natural()};
+        c.end = c.below + detail::completions_of(v, i + 1, next, left - y);
+        out.push_back(std::move(c));
+        left -= y;
+        layer = next;
+    }
+    return out;
+}
+
+// The centre of the cell, in half units so that a one-wide cell is not
+// encoded at its edge: the smallest u with u * count >= (below + end) / 2.
+// A cell narrower than 2^-64 of the count can miss its centre and still hold
+// codes; it then gets the middle one.
+std::uint64_t code_of(const cell& c, int i) {
+    natural doubled = c.count;
+    doubled.mul_small(2);
+    std::uint64_t u = 0;
+    if (first_code(doubled, c.below + c.end, u) && c.holds(u)) return u;
+    std::uint64_t first = 0, after = 0;
+    if (!first_code(c.count, c.below, first) || !c.holds(first)) {
+        throw std::domain_error(
+            "bounded_compositions::encode: no 64-bit code decodes to the "
+            "value of part " +
+            std::to_string(i));
+    }
+    const std::uint64_t last =
+        first_code(c.count, c.end, after) ? after - 1 : std::numeric_limits<std::uint64_t>::max();
+    return first + (last - first) / 2;
+}
+
+double to_unit(std::uint64_t u) {
+    const double d = std::ldexp(static_cast<double>(u), -64);
+    return d < 1.0 ? d : std::nextafter(1.0, 0.0);
+}
+
 std::uint64_t to_fraction(double u, int i) {
     if (!(u >= 0.0 && u < 1.0)) {  // also rejects NaN
         throw std::out_of_range("bounded_compositions::decode: u[" + std::to_string(i) +
@@ -117,49 +192,16 @@ void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {
         check_round_trip(s, x, back, "a logarithmic space");
         return;
     }
-    const k::space_view v = s.view();
-    std::int32_t left = v.total;
-    std::int32_t layer = v.layer_base;
-    for (int i = 0; i < dims_of(s); ++i) {
-        const std::int32_t y = x[i] - v.lo[i];
-        const std::int32_t next = k::layer_after(v, i, left, layer, y);
-        const natural count = detail::completions_of(v, i, layer, left);
-        const natural below = detail::below_of(v, i, left, layer, y);
-        const natural width = detail::completions_of(v, i + 1, next, left - y);
-        // Centre of the cell [below, below + width), in half units so that a
-        // one-wide cell is not encoded at its edge: the smallest fraction u
-        // with u * count >= below + width / 2.
-        natural doubled = count;
-        doubled.mul_small(2);
-        natural target = below + below;
-        target += width;
-        std::uint64_t lo = 0, hi = std::numeric_limits<std::uint64_t>::max();
-        while (lo < hi) {
-            const std::uint64_t mid = lo + (hi - lo) / 2;
-            if (scaled(doubled, mid) >= target) {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-        const natural at = scaled(count, lo);
-        if (at < below || at >= below + width) {
-            throw std::domain_error("bounded_compositions::encode: the cell of part " +
-                                    std::to_string(i) +
-                                    " is narrower than 2^-64 and cannot be represented");
-        }
-        u[i] = lo;
-        left -= y;
-        layer = next;
-    }
+    const std::vector<cell> cells = cells_of(s, x);
+    for (int i = 0; i < dims_of(s); ++i) u[i] = code_of(cells[static_cast<std::size_t>(i)], i);
 }
 
 void encode(const space& s, const std::int32_t* x, double* u) {
+    if (!s.contains(x)) {
+        throw std::invalid_argument(
+            "bounded_compositions::encode: not a composition of this space");
+    }
     if (s.counting_mode() == counting::logarithmic) {
-        if (!s.contains(x)) {
-            throw std::invalid_argument(
-                "bounded_compositions::encode: not a composition of this space");
-        }
         const std::vector<double> f = encode_log(s, x);
         std::copy(f.begin(), f.end(), u);
         std::vector<std::int32_t> back(s.parts());
@@ -167,22 +209,25 @@ void encode(const space& s, const std::int32_t* x, double* u) {
         check_round_trip(s, x, back, "a logarithmic space");
         return;
     }
-    std::vector<std::uint64_t> fixed(static_cast<std::size_t>(dims_of(s)));
-    encode(s, x, fixed.data());
-    for (std::size_t i = 0; i < fixed.size(); ++i) {
-        double d = std::ldexp(static_cast<double>(fixed[i]), -64);
-        if (d >= 1.0) d = std::nextafter(1.0, 0.0);
-        u[i] = d;
-    }
-    // Rounding to 53 bits can leave a narrow cell; check the round trip.
-    std::vector<std::int32_t> back(s.parts());
-    decode(s, u, back.data());
-    for (std::size_t i = 0; i < back.size(); ++i) {
-        if (back[i] != x[i]) {
-            throw std::domain_error(
-                "bounded_compositions::encode: the composition's cell is narrower than double "
-                "precision can represent; use the 64-bit encode");
+    // The 64-bit code rounded to a double, which a cell narrower than the
+    // doubles near it can lose; then the smallest double at or above the
+    // cell's first code, if that is still in the cell.
+    const std::vector<cell> cells = cells_of(s, x);
+    for (int i = 0; i < dims_of(s); ++i) {
+        const cell& c = cells[static_cast<std::size_t>(i)];
+        double d = to_unit(code_of(c, i));
+        std::uint64_t first = 0;
+        if (!c.holds(to_fraction(d, i)) && first_code(c.count, c.below, first)) {
+            d = to_unit(first);
+            if (to_fraction(d, i) < first) d = std::nextafter(d, 1.0);
         }
+        if (d >= 1.0 || !c.holds(to_fraction(d, i))) {
+            throw std::domain_error(
+                "bounded_compositions::encode: no double decodes to the value "
+                "of part " +
+                std::to_string(i) + "; use the 64-bit encode");
+        }
+        u[i] = d;
     }
 }
 

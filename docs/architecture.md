@@ -51,12 +51,12 @@ restriction applies to the kernel layer.
 | Sequence | An indexed mapping from immutable configuration to compositions, with a separate cursor. |
 | Support | The parts whose values are nonzero. |
 
-Ranks and cached prefixes have meaning relative to a space. Treat a region
-as belonging to the space that created it, including copies of that space;
-do not transfer its cached metadata to another space. The current `region`
-value does not retain domain identity. Consumers must validate compatibility
-before using metadata; incomplete checks are review R1. Region equality
-currently compares endpoints only and is not a domain-compatibility check.
+Ranks and cached prefixes have meaning relative to a space. A region keeps
+the space that created it (`region::domain`) and belongs to that space and
+to any space equal to it under `detail::same_space`. Every function taking a
+space and a region checks this before reading the region's ranks or prefix,
+and throws `std::invalid_argument` for a region of another space. Region
+equality compares endpoints and domains.
 
 The current `detail::same_space` check compares total, ordered bounds, support
 limits and ordered group descriptions. It does not prove equivalence of
@@ -94,7 +94,8 @@ Widen operands before arithmetic, then check before narrowing, multiplying
 allocation dimensions or computing offsets. Saturation must not change a
 feasible set; reject an unsupported representation explicitly. Subspace
 metadata must reconstruct the same set as its table, including after Python
-pickling. Review R3 and R8 identify violations.
+pickling: `space::subspace` computes the remaining total and group limits in
+64 bits and rejects a prefix that int32 metadata cannot describe.
 
 Exact tables store prefix sums of suffix counts in flat row-major limb arrays:
 
@@ -150,14 +151,16 @@ with exact decoding near a boundary is not guaranteed.
 The codec targets `decode(encode(x)) == x` whenever an input code exists for
 the composition. A narrow cell may contain a grid point even when its center
 cannot be represented; width alone does not establish unreachability. Encoding
-can currently reject reachable cells (R5). Python encode/decode require at
+then returns a code inside the cell. Python encode/decode require at
 least two parts; the C++ pointer interface permits one part with zero cube
 coordinates.
 
 Repair minimizes squared distance, with ties resolved by the first composition
-in rank order. Redundant counted limits must not change its answer. Current
-cost comparisons can violate this for large finite inputs (R4). The documented
-nearest-double conversion of `natural` has rounding counterexamples (R7).
+in rank order. It compares costs in doubles after subtracting the median of z
+and taking each part's cost relative to its value nearest its target, which
+change every composition's distance by the same amount; `repair.hpp` states
+the accuracy. Redundant counted limits do not change its answer when those
+costs are exact. `natural` converts to the nearest double, ties to even.
 
 ## Ownership and lifetimes
 
@@ -166,7 +169,7 @@ nearest-double conversion of `natural` has rounding counterexamples (R7).
 | `space` | `shared_ptr<const space_data>`; copies share tables | Its view borrows storage from that ownership chain |
 | Subspace | Parent reference and remaining-part metadata | Parent tables and planning arrays |
 | `sequence` | Immutable shared configuration and its own atomic cursor | Executor/output for a call |
-| `region` | Endpoints, cached prefix and subtree flag | Domain association is a caller obligation today |
+| `region` | Endpoints, cached prefix, subtree flag and a copy of its space | None |
 | `visited_set` | A space copy and a sharded exact set of ranks | Input composition buffers |
 | `fresh_sampler` | Copies of source and fallback sequences | Visited set, filter context, executor/output |
 | `thread_pool` | Workers, synchronization and current job state | Callback/context until `run` finishes |
@@ -232,8 +235,8 @@ Stateful operations must document their commit point. Current behavior:
   There is no transaction across source, set and output.
 - A pool waits for workers and rethrows a recorded callback exception. Workers
   already executing or racing with failure detection may finish more work.
-- Failed SciPy encoding can leave its cursor ahead of `num_generated` (R6).
-  This is a defect, not the adapter's intended contract.
+- SciPy's `CompositionEngine.random` encodes before moving its cursor, so a
+  draw that raises leaves the engine where it was.
 
 Construction must clean up partially acquired resources: a pool whose later
 worker fails to start stops and joins the ones already started, then rethrows. `noexcept` must match the operations performed:

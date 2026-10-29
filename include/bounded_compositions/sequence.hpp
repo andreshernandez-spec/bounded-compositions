@@ -121,7 +121,8 @@ sequence iid_sequence(const space& s, std::uint64_t seed);
 // the same order, and overlap() says where a region resumes. For regions
 // wider than 64 bits a sequence holds fewer points than the region: a piece's
 // sequence starts with r's points in it, then continues with ranks r's
-// sequence does not reach. Throws std::out_of_range if r ends past s.size().
+// sequence does not reach. Throws std::invalid_argument if r belongs to
+// another space (region.hpp).
 sequence rank_sequence(const space& s, const region& r);
 sequence rank_sequence(const space& s, const region& r, std::uint64_t scramble_seed);
 sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
@@ -136,7 +137,8 @@ sequence iid_sequence(const space& s, const region& r, std::uint64_t seed);
 sequence coordinate_sequence(const space& s);
 sequence coordinate_sequence(const space& s, std::uint64_t scramble_seed);
 // Restricted to a subtree: the prefix is fixed and the Sobol points cover the
-// remaining parts. Throws std::invalid_argument if the region is not a subtree.
+// remaining parts. Throws std::invalid_argument if the region is not a subtree
+// of s, or if s.subspace(prefix) throws.
 sequence coordinate_sequence(const space& s, const region& subtree);
 sequence coordinate_sequence(const space& s, const region& subtree, std::uint64_t scramble_seed);
 

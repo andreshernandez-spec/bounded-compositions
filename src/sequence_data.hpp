@@ -44,9 +44,6 @@ struct sequence_data {
     void write_points(std::uint64_t first, std::uint64_t count, std::int32_t* out) const;
 };
 
-// Same parts, total, bounds, support and group limits.
-bool same_space(const space& a, const space& b);
-
 }  // namespace detail
 }  // namespace bounded_compositions
 

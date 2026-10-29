@@ -80,14 +80,24 @@ int natural::bit_length() const noexcept {
 }
 
 double natural::to_double() const noexcept {
-    const std::size_t n = limbs_.size();
-    if (n == 0) return 0.0;
-    if (n > 17) return std::numeric_limits<double>::infinity();  // > 2^1024
-    // The top two limbs carry more than the 53 bits a double keeps.
-    double top = static_cast<double>(limbs_[n - 1]);
-    if (n == 1) return top;
-    top = std::ldexp(top, 64) + static_cast<double>(limbs_[n - 2]);
-    return std::ldexp(top, 64 * static_cast<int>(n - 2));
+    const int bits = bit_length();
+    if (bits <= 64) return is_zero() ? 0.0 : static_cast<double>(limbs_[0]);
+    if (bits > 1024) return std::numeric_limits<double>::infinity();
+    // The top 64 bits, with a 1 in the last if any bit below them is set. A
+    // double keeps 53 of them, so that bit only tells a tie from a value
+    // just above it, and rounding these 64 bits once rounds the whole value.
+    const int shift = bits - 64;
+    const std::size_t word = static_cast<std::size_t>(shift / 64);
+    const int bit = shift % 64;
+    k::limb top = limbs_[word] >> bit;
+    bool below = false;
+    if (bit != 0) {
+        top |= limbs_[word + 1] << (64 - bit);
+        below = (limbs_[word] << (64 - bit)) != 0;
+    }
+    for (std::size_t i = 0; i < word && !below; ++i) below = limbs_[i] != 0;
+    if (below) top |= 1;
+    return std::ldexp(static_cast<double>(top), shift);
 }
 
 std::uint64_t natural::to_u64() const {

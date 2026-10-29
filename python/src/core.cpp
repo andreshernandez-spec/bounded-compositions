@@ -603,6 +603,9 @@ NB_MODULE(_core, m) {
         .def_prop_ro("prefix", &bc::region::prefix,
                      "The longest prefix shared by every composition of the region.")
         .def_prop_ro("is_subtree", &bc::region::is_subtree)
+        .def_prop_ro("space", &bc::region::domain,
+                     "The space the region was made from. Functions taking a space and a region "
+                     "raise ValueError for a region of another space.")
         .def(
             "contains",
             [](const bc::region& r, nb::handle rank) {
@@ -777,9 +780,9 @@ NB_MODULE(_core, m) {
             return out;
         },
         "space"_a, "x"_a, "dtype"_a = "float64", nb::kw_only(), "workers"_a = 1,
-        "The centre of each composition's cell in [0, 1)^(parts - 1), so that "
-        "decode(encode(x)) == x. Raises ValueError for a composition whose cell is narrower "
-        "than the dtype can represent (decode never produces those).");
+        "The centre of each composition's cell in [0, 1)^(parts - 1), or a code inside a cell "
+        "too narrow to hold its centre, so that decode(encode(x)) == x. Raises ValueError for a "
+        "composition no code of the dtype decodes to (decode never produces those).");
 
     // --------------------------------------------------------------- repair
     m.def(

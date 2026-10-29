@@ -10,6 +10,7 @@
 #include "bounded_compositions/kernel/philox.hpp"
 #include "bounded_compositions/kernel/radical.hpp"
 #include "bounded_compositions/kernel/walk.hpp"
+#include "domain.hpp"
 #include "sequence_data.hpp"
 
 namespace bounded_compositions {
@@ -130,11 +131,6 @@ void sequence_data::write_points(std::uint64_t first, std::uint64_t count,
     }
 }
 
-bool same_space(const space& a, const space& b) {
-    return a.total() == b.total() && a.lower() == b.lower() && a.upper() == b.upper() &&
-           a.support() == b.support() && a.groups() == b.groups();
-}
-
 }  // namespace detail
 
 namespace {
@@ -142,6 +138,7 @@ namespace {
 // r == nullptr means the whole space.
 std::shared_ptr<detail::sequence_data> base_data(const space& s, const region* r,
                                                  sequence_kind kind, std::uint64_t seed) {
+    if (r != nullptr) detail::require_domain(s, *r, "sequence");
     if (s.counting_mode() == counting::logarithmic) {
         // No exact counts: only point-by-point decoding over the whole space.
         if (kind == sequence_kind::rank || kind == sequence_kind::scaled_rank || r != nullptr) {
@@ -156,10 +153,6 @@ std::shared_ptr<detail::sequence_data> base_data(const space& s, const region* r
         d->span = natural(s.empty() ? 0 : 1);  // only its emptiness is used
         d->capacity = s.empty() ? 0 : std::numeric_limits<std::uint64_t>::max();
         return d;
-    }
-    if (r != nullptr && r->end() > s.size()) {
-        throw std::out_of_range("bounded_compositions::sequence: region ends at rank " +
-                                r->end().to_string() + ", past the size " + s.size().to_string());
     }
     auto d = std::make_shared<detail::sequence_data>(s);
     d->kind = kind;
@@ -439,11 +432,11 @@ namespace {
 
 std::shared_ptr<detail::sequence_data> make_coordinate(const space& s, const region* r,
                                                        bool scramble, std::uint64_t seed) {
+    auto d = base_data(s, r, sequence_kind::coordinate, scramble ? seed : 0);
     if (r != nullptr && !r->empty() && !r->is_subtree()) {
         throw std::invalid_argument(
             "bounded_compositions::coordinate_sequence: the region must be a subtree");
     }
-    auto d = base_data(s, r, sequence_kind::coordinate, scramble ? seed : 0);
     d->decoded = true;
     if (d->span.is_zero()) return d;
     if (r != nullptr && !r->prefix().empty()) {

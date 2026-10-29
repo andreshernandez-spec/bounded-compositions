@@ -27,7 +27,7 @@ class natural {
     std::string to_string() const;
     bool is_zero() const noexcept { return limbs_.empty(); }
     int bit_length() const noexcept;
-    // Nearest double, or +inf beyond the double range.
+    // Nearest double, ties to even; +inf when that is beyond the double range.
     double to_double() const noexcept;
     bool fits_u64() const noexcept { return limbs_.size() <= 1; }
     // Throws std::overflow_error unless fits_u64().
