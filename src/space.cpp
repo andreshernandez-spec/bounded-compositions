@@ -355,7 +355,8 @@ bool set_groups(detail::space_data& d, std::int32_t shifted_total, std::int32_t 
         const std::int64_t hi = std::min<std::int64_t>(
             {std::int64_t{gl.max_sum} - lower_sum, cap_sum, std::int64_t{shifted_total}});
         if (hi < lo) feasible = false;
-        d.grp_lo[g] = static_cast<std::int32_t>(std::min<std::int64_t>(lo, shifted_total + 1));
+        d.grp_lo[g] =
+            static_cast<std::int32_t>(std::min<std::int64_t>(lo, std::int64_t{shifted_total} + 1));
         d.grp_hi[g] = static_cast<std::int32_t>(std::max<std::int64_t>(hi, -1));
     }
 
@@ -476,6 +477,13 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
             "bounded_compositions::space: total minus lower bounds exceeds int32");
     }
     const std::int32_t shifted_total = feasible ? static_cast<std::int32_t>(shifted) : 0;
+    // Every row holds at least shifted_total + 1 entries. Checked before the
+    // group arithmetic, which needs shifted_total + 1 to fit in int32.
+    if (std::int64_t{shifted_total} + 1 > max_entries) {
+        throw std::length_error("bounded_compositions::space: the total minus the lower bounds, " +
+                                std::to_string(shifted_total) +
+                                ", needs more than 2^28 table entries");
+    }
 
     check_support(support, parts);
     d->support = support;

@@ -372,6 +372,12 @@ TEST_CASE("group limits are validated and their cost is bounded") {
     for (int g = 0; g < 6; ++g) crossing.push_back(bc::group_limit{{g, g + 6}, 0, 900});
     CHECK_THROWS_AS(bc::space(1000, composition(12, 0), composition(12, 1000), none, crossing),
                     std::length_error);
+    // The widest total is rejected before the group arithmetic could
+    // overflow int32 (the sanitizer builds check the order).
+    const std::int32_t most = std::numeric_limits<std::int32_t>::max();
+    CHECK_THROWS_AS(
+        bc::space(most, composition{0}, composition{most}, none, {bc::group_limit{{0}}}),
+        std::length_error);
     // Spaces with different groups are different orders.
     const bc::space a(8, lo, hi, none, {bc::group_limit{{0, 1}, 0, 6}});
     CHECK_THROWS_AS(bc::rank_sequence(a).overlap(bc::rank_sequence(bc::space(8, lo, hi)), 1),
