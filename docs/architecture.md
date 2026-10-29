@@ -155,9 +155,11 @@ least two parts; the C++ pointer interface permits one part with zero cube
 coordinates.
 
 Repair minimizes squared distance, with ties resolved by the first composition
-in rank order. Redundant counted limits must not change its answer. Current
-cost comparisons can violate this for large finite inputs (R4). `natural`
-converts to the nearest double, ties to even.
+in rank order. It compares costs in doubles after subtracting the median of z
+and taking each part's cost relative to its value nearest its target, which
+change every composition's distance by the same amount; `repair.hpp` states
+the accuracy. Redundant counted limits do not change its answer when those
+costs are exact. `natural` converts to the nearest double, ties to even.
 
 ## Ownership and lifetimes
 
