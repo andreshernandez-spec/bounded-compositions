@@ -232,8 +232,8 @@ Stateful operations must document their commit point. Current behavior:
   There is no transaction across source, set and output.
 - A pool waits for workers and rethrows a recorded callback exception. Workers
   already executing or racing with failure detection may finish more work.
-- Failed SciPy encoding can leave its cursor ahead of `num_generated` (R6).
-  This is a defect, not the adapter's intended contract.
+- SciPy's `CompositionEngine.random` encodes before moving its cursor, so a
+  draw that raises leaves the engine where it was.
 
 Construction must clean up partially acquired resources. Pool construction
 currently violates this (R2). `noexcept` must match the operations performed:
