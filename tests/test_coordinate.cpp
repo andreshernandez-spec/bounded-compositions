@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <random>
 #include <stdexcept>
@@ -164,6 +165,49 @@ TEST_CASE("cells too narrow for the representation are reported") {
     const std::uint64_t one[1] = {0};
     composition two(2);
     CHECK_THROWS_AS(bc::decode(none, one, two.data()), std::out_of_range);
+}
+
+TEST_CASE("every composition decode produces has a code") {
+    // First and last cells far narrower than 2^-64: one composition with
+    // x[0] = 0 out of 2^99, and long compositions of 30 and 40.
+    composition hi(100, 1);
+    hi[0] = 99;
+    const bc::space spaces[] = {bc::space(99, composition(100, 0), hi),
+                                bc::space(30, composition(30, 0), composition(30, 30)),
+                                bc::space(40, composition(40, 0), composition(40, 40))};
+    const std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
+    const std::uint64_t edge_codes[] = {0, 1, 2, most / 2, most - 1, most};
+    const double edge_doubles[] = {0.0, std::ldexp(1.0, -70), 0.5, std::nextafter(1.0, 0.0)};
+    std::mt19937_64 rng(5);
+    for (const bc::space& s : spaces) {
+        const std::size_t d = s.parts() - 1;
+        std::vector<std::uint64_t> u(d), code(d);
+        std::vector<double> f(d), unit(d);
+        composition x(s.parts()), back(s.parts());
+        for (int trial = 0; trial < 200; ++trial) {
+            const bool edges = trial % 2 == 0;
+            for (std::uint64_t& c : u) c = edges ? edge_codes[rng() % 6] : rng();
+            bc::decode(s, u.data(), x.data());
+            bc::encode(s, x.data(), code.data());
+            bc::decode(s, code.data(), back.data());
+            REQUIRE(back == x);
+            for (double& c : f) {
+                c = edges ? edge_doubles[rng() % 4]
+                          : std::ldexp(static_cast<double>(rng() >> 11), -53);
+            }
+            bc::decode(s, f.data(), x.data());
+            bc::encode(s, x.data(), unit.data());
+            bc::decode(s, unit.data(), back.data());
+            REQUIRE(back == x);
+        }
+    }
+    // The review's case: x = decode(0, ..., 0) = (0, 1, ..., 1) has code 0.
+    composition x(100);
+    const std::vector<std::uint64_t> zeros(99, 0);
+    bc::decode(spaces[0], zeros.data(), x.data());
+    std::vector<std::uint64_t> code(99);
+    bc::encode(spaces[0], x.data(), code.data());
+    CHECK(code[0] == 0);
 }
 
 TEST_CASE("coordinate sequences: valid points, first part stratified, extensible") {

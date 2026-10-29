@@ -11,9 +11,19 @@
 namespace bounded_compositions {
 
 // Writes to out[0..parts()) the composition x of s nearest to z[0..parts())
-// in squared distance, the sum over i of (x[i] - z[i])^2. Exact for every
-// limit the space counts (bounds, support and group limits), in either
-// counting mode; ties go to the composition first in rank order.
+// in squared distance, the sum over i of (x[i] - z[i])^2, under every limit
+// the space counts (bounds, support and group limits), in either counting
+// mode; ties go to the composition first in rank order.
+//
+// Distances are compared in doubles after removing what every composition
+// shares: the median of z is subtracted from each z[i] (the parts sum to the
+// total), and each part's cost is taken relative to its value nearest its
+// target. A large common offset in z, or a part far from the others, then
+// does not swamp the differences that decide. The answer is exact when these
+// costs are exact in doubles (z[i] minus the median on a coarse binary grid,
+// say), and a limit the answer meets anyway does not change it. Otherwise
+// compositions whose distances differ by less than the rounding of the costs,
+// about 2^-52 of them per part, can come out in either order.
 //
 // Without limits it is a greedy allocation from the lower bounds, one unit at
 // a time to the part where it adds least, which is exact for separable convex

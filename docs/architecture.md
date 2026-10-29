@@ -151,14 +151,16 @@ with exact decoding near a boundary is not guaranteed.
 The codec targets `decode(encode(x)) == x` whenever an input code exists for
 the composition. A narrow cell may contain a grid point even when its center
 cannot be represented; width alone does not establish unreachability. Encoding
-can currently reject reachable cells (R5). Python encode/decode require at
+then returns a code inside the cell. Python encode/decode require at
 least two parts; the C++ pointer interface permits one part with zero cube
 coordinates.
 
 Repair minimizes squared distance, with ties resolved by the first composition
-in rank order. Redundant counted limits must not change its answer. Current
-cost comparisons can violate this for large finite inputs (R4). The documented
-nearest-double conversion of `natural` has rounding counterexamples (R7).
+in rank order. It compares costs in doubles after subtracting the median of z
+and taking each part's cost relative to its value nearest its target, which
+change every composition's distance by the same amount; `repair.hpp` states
+the accuracy. Redundant counted limits do not change its answer when those
+costs are exact. `natural` converts to the nearest double, ties to even.
 
 ## Ownership and lifetimes
 
@@ -233,8 +235,8 @@ Stateful operations must document their commit point. Current behavior:
   There is no transaction across source, set and output.
 - A pool waits for workers and rethrows a recorded callback exception. Workers
   already executing or racing with failure detection may finish more work.
-- Failed SciPy encoding can leave its cursor ahead of `num_generated` (R6).
-  This is a defect, not the adapter's intended contract.
+- SciPy's `CompositionEngine.random` encodes before moving its cursor, so a
+  draw that raises leaves the engine where it was.
 
 Construction must clean up partially acquired resources. Pool construction
 currently violates this (R2). `noexcept` must match the operations performed:

@@ -45,11 +45,14 @@ class CompositionEngine(qmc.QMCEngine):
 
     Notes
     -----
-    A composition whose cell is narrower than a double can represent (below
-    about 2^-53 of the unit interval, which needs a space of more than 2^53
-    compositions and an extreme composition) has no code: random() raises
-    ValueError for it, and compositions() returns it. Decoding never produces
-    such compositions, so box optimisers cannot reach them either.
+    A composition that no double decodes to (its cell lies between two
+    neighbouring doubles, which needs a space of more than 2^53 compositions
+    and an extreme composition) has no code: random() raises ValueError for
+    it, and compositions() returns it. Decoding never produces such
+    compositions, so box optimisers cannot reach them either. A random() that
+    raises draws nothing: the engine stays at its position.
+
+    An engine, like SciPy's, is not safe to share between threads.
     """
 
     def __init__(self, space, *, kind="rank", scramble=True, rng=None):
@@ -77,7 +80,12 @@ class CompositionEngine(qmc.QMCEngine):
         return self._sequence
 
     def _random(self, n=1, *, workers=1):
-        return encode(self.space, self._sequence.take(n, workers=workers), workers=workers)
+        # Encode before moving the cursor: a composition with no code raises
+        # and leaves the engine where it was.
+        start = self._sequence.position
+        u = encode(self.space, self._sequence.points(start, n, workers=workers), workers=workers)
+        self._sequence.seek(start + n)
+        return u
 
     def compositions(self, n=1, *, workers=1):
         """The next n compositions, as an (n, parts) int32 array. They count
