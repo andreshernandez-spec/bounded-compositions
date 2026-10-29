@@ -258,7 +258,7 @@ Existing CMake tests, sanitizer presets, Python tests and fuzz properties
 cover much of this. With `-Dtests=enabled`, as in CI, Meson fails its setup
 without Catch2, and it runs the kernel checker and standalone header builds.
 The libFuzzer target links a copy of the host library built with coverage.
-Formatting has no CI gate yet (R11).
+CI checks C++ formatting with the reference clang-format.
 
 Known runtime deviations at reviewed commit `44b026a` are R1 region validation,
 R2 pool construction, R3 subspace metadata, R4 repair precision, R5 codec

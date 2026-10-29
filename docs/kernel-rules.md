@@ -48,4 +48,4 @@ which build system or caller uses them.
 The script is registered with CTest when a Python interpreter is found; it
 can also be run directly as described in the coding-style guide. Meson runs
 it as a test too, when Python is found, and compiles each kernel header alone
-the same way.
+the same way. A CI job also runs the script on its own.

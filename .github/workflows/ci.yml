@@ -134,6 +134,21 @@ jobs:
           mkdir -p corpus
           ./build/tests/bounded_compositions_fuzz -max_total_time=60 -max_len=256 corpus
 
+  checks:
+    name: "Format and kernel rules"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        # The reference formatter of docs/coding-style.md.
+        run: python3 -m pip install --user clang-format==23.1.2
+      - name: C++ formatting
+        run: >
+          git ls-files -z -- '*.cpp' '*.hpp' ':(exclude)src/sobol_directions.cpp'
+          | xargs -0 clang-format --dry-run --Werror
+      - name: Kernel rules
+        run: python3 tools/check_kernel.py include/bounded_compositions/kernel
+
   python:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

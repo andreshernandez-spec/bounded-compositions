@@ -177,9 +177,8 @@ git ls-files -z -- '*.cpp' '*.hpp' ':(exclude)src/sobol_directions.cpp' |
   xargs -0 clang-format --dry-run --Werror
 ```
 
-The current C++ tree matches the reference formatter. Formatting has no CI
-gate yet; review R11 tracks that enforcement gap. Python style, semantic
-naming, contracts and layering are also checked manually today.
+CI runs this check with clang-format 23.1.2, the reference version. Python
+style, semantic naming, contracts and layering are checked in review.
 
 For behavior changes, run the development build and relevant tests:
 
