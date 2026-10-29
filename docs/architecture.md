@@ -258,9 +258,10 @@ allocation failure would terminate.
 | Both build systems exercise the code | Aligned sources/tests and nonempty test registration |
 
 Existing CMake tests, sanitizer presets, Python tests and fuzz properties
-cover much of this. Meson can currently skip every test if Catch2 is absent
-and omits kernel guards (R9). Fuzzer coverage reaches the harness but omits
-the compiled host (R10). Formatting has no CI gate yet (R11).
+cover much of this. With `-Dtests=enabled`, as in CI, Meson fails its setup
+without Catch2, and it runs the kernel checker and standalone header builds.
+The libFuzzer target links a copy of the host library built with coverage.
+CI checks C++ formatting with the reference clang-format.
 
 Known runtime deviations at reviewed commit `44b026a` are R1 region validation,
 R2 pool construction, R3 subspace metadata, R4 repair precision, R5 codec

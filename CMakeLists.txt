@@ -36,19 +36,21 @@ target_include_directories(bounded_compositions_kernel INTERFACE
   $<INSTALL_INTERFACE:include>)
 target_compile_features(bounded_compositions_kernel INTERFACE cxx_std_17)
 
-# Host core and public API.
-add_library(bounded_compositions
-  src/codec.cpp
-  src/executor.cpp
-  src/fresh.cpp
-  src/natural.cpp
-  src/region.cpp
-  src/repair.cpp
-  src/sequence.cpp
-  src/sobol.cpp
-  src/sobol_directions.cpp
-  src/space.cpp
-  src/version.cpp)
+# Host core and public API. The tests rebuild these sources with other
+# settings (a smaller limb budget, fuzzing coverage).
+set(BCOMP_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/codec.cpp
+  ${PROJECT_SOURCE_DIR}/src/executor.cpp
+  ${PROJECT_SOURCE_DIR}/src/fresh.cpp
+  ${PROJECT_SOURCE_DIR}/src/natural.cpp
+  ${PROJECT_SOURCE_DIR}/src/region.cpp
+  ${PROJECT_SOURCE_DIR}/src/repair.cpp
+  ${PROJECT_SOURCE_DIR}/src/sequence.cpp
+  ${PROJECT_SOURCE_DIR}/src/sobol.cpp
+  ${PROJECT_SOURCE_DIR}/src/sobol_directions.cpp
+  ${PROJECT_SOURCE_DIR}/src/space.cpp
+  ${PROJECT_SOURCE_DIR}/src/version.cpp)
+add_library(bounded_compositions ${BCOMP_SOURCES})
 add_library(bounded_compositions::bounded_compositions ALIAS bounded_compositions)
 target_link_libraries(bounded_compositions
   PUBLIC bounded_compositions_kernel Threads::Threads

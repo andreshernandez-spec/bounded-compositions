@@ -46,6 +46,6 @@ which build system or caller uses them.
 - Rules 1, 3 and 7 are checked in review.
 
 The script is registered with CTest when a Python interpreter is found; it
-can also be run directly as described in the coding-style guide. Meson does
-not currently run the script or the standalone-header builds. This gap is
-recorded in the [code review](reviews/2026-10-29.md#r9).
+can also be run directly as described in the coding-style guide. Meson runs
+it as a test too, when Python is found, and compiles each kernel header alone
+the same way. A CI job also runs the script on its own.

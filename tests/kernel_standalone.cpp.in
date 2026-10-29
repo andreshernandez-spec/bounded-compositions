@@ -1,0 +1,2 @@
+// One kernel header compiled alone, without exceptions or RTTI (Meson build).
+#include "bounded_compositions/kernel/@HEADER@.hpp"
