@@ -199,8 +199,8 @@ python -m pytest
 ```
 
 Use sanitizer presets for memory/concurrency changes and Meson when changing
-shared sources or build behavior. Confirm tests are registered: Meson currently
-allows all tests to be skipped when Catch2 is absent. Select further checks
+shared sources or build behavior, with `-Dtests=enabled` so that a missing
+Catch2 fails the setup instead of leaving no tests. Select further checks
 for the invariant changed rather than repeating unrelated suites. Documentation
 edits need link, whitespace and contract checks, without rebuilding unchanged code.
 

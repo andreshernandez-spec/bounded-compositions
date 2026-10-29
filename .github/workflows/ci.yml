@@ -44,7 +44,7 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
   msvc:
     name: ${{ matrix.name }}
@@ -66,7 +66,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Debug --parallel
       - name: Test
-        run: ctest --test-dir build -C Debug --output-on-failure
+        run: ctest --test-dir build -C Debug --output-on-failure --no-tests=error
 
   sanitizers:
     name: ${{ matrix.name }}
@@ -96,18 +96,22 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
   meson:
     name: "Meson build"
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install meson
-        run: python3 -m pip install --user meson ninja
-      - name: Build and test
+      - name: Install meson and Catch2
         run: |
-          meson setup builddir
+          python3 -m pip install --user meson ninja
+          sudo apt-get update && sudo apt-get install -y catch2
+      - name: Build and test
+        # tests=enabled fails the setup if Catch2 is missing, rather than
+        # passing with no tests.
+        run: |
+          meson setup builddir -Dtests=enabled
           meson compile -C builddir
           meson test -C builddir
 

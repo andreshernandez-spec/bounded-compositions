@@ -10,7 +10,8 @@ threads = dependency('threads')
 # Header-only, device-ready kernel layer.
 bounded_compositions_kernel_dep = declare_dependency(include_directories: inc)
 
-bounded_compositions_lib = library('bounded_compositions',
+# The tests rebuild these sources with a smaller limb budget.
+bounded_compositions_sources = files(
   'src/codec.cpp',
   'src/executor.cpp',
   'src/fresh.cpp',
@@ -21,7 +22,10 @@ bounded_compositions_lib = library('bounded_compositions',
   'src/sobol.cpp',
   'src/sobol_directions.cpp',
   'src/space.cpp',
-  'src/version.cpp',
+  'src/version.cpp')
+
+bounded_compositions_lib = library('bounded_compositions',
+  bounded_compositions_sources,
   include_directories: inc,
   dependencies: threads,
   cpp_args: ['-DBCOMP_VERSION_STRING="' + meson.project_version() + '"'],
@@ -34,12 +38,32 @@ bounded_compositions_dep = declare_dependency(
   dependencies: threads)
 meson.override_dependency('bounded-compositions', bounded_compositions_dep)
 
-if not meson.is_subproject()
+if not meson.is_subproject() and not get_option('tests').disabled()
+  # The kernel rules (docs/kernel-rules.md): the checker, and each kernel
+  # header compiled alone. Keep the list in step with the directory.
+  python3 = find_program('python3', 'python', required: get_option('tests'))
+  if python3.found()
+    test('kernel_rules', python3,
+      args: [files('tools/check_kernel.py'),
+             meson.current_source_dir() / 'include' / 'bounded_compositions' / 'kernel'])
+  endif
+  kernel_tus = []
+  foreach header : ['config', 'limbs', 'logsum', 'philox', 'radical', 'sobol', 'views', 'walk']
+    kernel_tus += configure_file(input: 'tests/kernel_standalone.cpp.in',
+      output: header + '_standalone.cpp', configuration: {'HEADER': header})
+  endforeach
+  static_library('bounded_compositions_kernel_standalone', kernel_tus,
+    dependencies: bounded_compositions_kernel_dep,
+    override_options: ['cpp_eh=none', 'cpp_rtti=false'])
+
   catch2 = dependency('catch2-with-main', version: '>=3', required: false)
   if not catch2.found()
     # Some Catch2 packages (conda-forge) ship CMake config files only.
     catch2 = dependency('Catch2', method: 'cmake', modules: ['Catch2::Catch2WithMain'],
-      version: '>=3', required: false)
+      version: '>=3', required: get_option('tests'))
+  endif
+  if not catch2.found()
+    warning('Catch2 3 not found, so no tests are built; -Dtests=enabled makes this an error')
   endif
   if catch2.found()
     tests = executable('bounded_compositions_tests',
@@ -61,10 +85,7 @@ if not meson.is_subproject()
       dependencies: [bounded_compositions_dep, catch2])
     test('bounded_compositions_tests', tests, timeout: 300)
     limit_tests = executable('bounded_compositions_limit_tests',
-      'tests/test_limits.cpp', 'src/codec.cpp', 'src/executor.cpp', 'src/fresh.cpp', 'src/natural.cpp',
-      'src/region.cpp', 'src/repair.cpp',
-      'src/sequence.cpp', 'src/sobol.cpp', 'src/sobol_directions.cpp',
-      'src/space.cpp', 'src/version.cpp',
+      'tests/test_limits.cpp', bounded_compositions_sources,
       include_directories: inc,
       cpp_args: ['-DBCOMP_MAX_LIMBS=2',
                  '-DBCOMP_VERSION_STRING="' + meson.project_version() + '"'],
