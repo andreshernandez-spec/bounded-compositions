@@ -777,9 +777,9 @@ NB_MODULE(_core, m) {
             return out;
         },
         "space"_a, "x"_a, "dtype"_a = "float64", nb::kw_only(), "workers"_a = 1,
-        "The centre of each composition's cell in [0, 1)^(parts - 1), so that "
-        "decode(encode(x)) == x. Raises ValueError for a composition whose cell is narrower "
-        "than the dtype can represent (decode never produces those).");
+        "The centre of each composition's cell in [0, 1)^(parts - 1), or a code inside a cell "
+        "too narrow to hold its centre, so that decode(encode(x)) == x. Raises ValueError for a "
+        "composition no code of the dtype decodes to (decode never produces those).");
 
     // --------------------------------------------------------------- repair
     m.def(

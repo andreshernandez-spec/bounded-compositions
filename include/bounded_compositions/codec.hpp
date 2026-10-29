@@ -8,9 +8,10 @@
 // (up to 2^-64 rounding per part).
 //
 // encode returns the centre of a composition's cell, so decode(encode(x)) is
-// x. A value whose share of the completions is below the resolution of the
-// representation (2^-64 for 64-bit fractions, about 2^-53 for doubles) has no
-// representable cell: decode never produces it and encode throws.
+// x. A cell narrower than the resolution of the representation (2^-64 for
+// 64-bit fractions, about 2^-53 for doubles) can miss its centre and still
+// hold codes; encode then returns one of those. Only a composition that no
+// code decodes to has none: decode never produces it, and encode throws.
 #ifndef BCOMP_CODEC_HPP
 #define BCOMP_CODEC_HPP
 
@@ -27,7 +28,8 @@ void decode(const space& s, const double* u, std::int32_t* out);
 void decode(const space& s, const std::uint64_t* u, std::int32_t* out);
 
 // Writes parts() - 1 coordinates. Throws std::invalid_argument if x is not in
-// the space, and std::domain_error if its cell is too narrow to represent.
+// the space, and std::domain_error if no code of the representation decodes
+// to x.
 void encode(const space& s, const std::int32_t* x, double* u);
 void encode(const space& s, const std::int32_t* x, std::uint64_t* u);
 

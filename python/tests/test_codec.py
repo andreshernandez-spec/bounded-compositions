@@ -39,6 +39,16 @@ def test_cells_too_narrow_for_doubles_have_no_code(wide):
     assert bc.encode(wide, [0] * 99 + [100]).shape == (99,)
 
 
+def test_narrow_cells_that_decode_reaches_have_codes():
+    # x[0] = 0 leaves one composition out of 2^99; code 0 decodes to it.
+    s = bc.Space(99, [0] * 100, [99] + [1] * 99)
+    x = bc.decode(s, np.zeros(99))
+    assert x[:3].tolist() == [0, 1, 1]
+    for dtype in (np.uint64, np.float64):
+        u = bc.encode(s, x, dtype=dtype)
+        assert u[0] == 0 and (bc.decode(s, u) == x).all()
+
+
 def test_decode_rejects_bad_input(small):
     with pytest.raises(ValueError):
         bc.decode(small, [0.5] * 4)

@@ -150,7 +150,7 @@ with exact decoding near a boundary is not guaranteed.
 The codec targets `decode(encode(x)) == x` whenever an input code exists for
 the composition. A narrow cell may contain a grid point even when its center
 cannot be represented; width alone does not establish unreachability. Encoding
-can currently reject reachable cells (R5). Python encode/decode require at
+then returns a code inside the cell. Python encode/decode require at
 least two parts; the C++ pointer interface permits one part with zero cube
 coordinates.
 

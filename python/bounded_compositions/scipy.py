@@ -45,11 +45,11 @@ class CompositionEngine(qmc.QMCEngine):
 
     Notes
     -----
-    A composition whose cell is narrower than a double can represent (below
-    about 2^-53 of the unit interval, which needs a space of more than 2^53
-    compositions and an extreme composition) has no code: random() raises
-    ValueError for it, and compositions() returns it. Decoding never produces
-    such compositions, so box optimisers cannot reach them either.
+    A composition that no double decodes to (its cell lies between two
+    neighbouring doubles, which needs a space of more than 2^53 compositions
+    and an extreme composition) has no code: random() raises ValueError for
+    it, and compositions() returns it. Decoding never produces such
+    compositions, so box optimisers cannot reach them either.
     """
 
     def __init__(self, space, *, kind="rank", scramble=True, rng=None):
