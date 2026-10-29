@@ -439,6 +439,29 @@ TEST_CASE("fresh_sampler hands out exactly the region's unvisited points") {
     CHECK_THROWS_AS(bc::fresh_sampler(bc::rank_sequence(s), v), std::invalid_argument);
 }
 
+TEST_CASE("fresh_sampler on decoded points when the table is wider than the size") {
+    // 12 parts summing to 207: the size takes 60 bits, but row 0 of the table
+    // holds prefix sums over every total up to 207, which take 65.
+    const bc::space s(207, composition(12, 0), composition(12, 207));
+    REQUIRE(s.size() <= natural(~std::uint64_t{0}));
+    for (const bc::sequence& source : {bc::coordinate_sequence(s, 3), bc::coordinate_sequence(s)}) {
+        bc::visited_set v(s);
+        bc::fresh_sampler f(source, v);
+        std::vector<std::int32_t> out(1000 * s.parts());
+        REQUIRE(f.take(1000, out.data()) == 1000);
+        std::set<composition> seen;
+        const auto w = static_cast<std::ptrdiff_t>(s.parts());
+        for (std::ptrdiff_t p = 0; p < 1000; ++p) {
+            const composition x(out.begin() + p * w, out.begin() + (p + 1) * w);
+            REQUIRE(s.contains(x.data()));
+            REQUIRE(v.contains(x.data()));
+            seen.insert(x);
+        }
+        REQUIRE(seen.size() == 1000);
+        REQUIRE(v.size() == 1000);
+    }
+}
+
 TEST_CASE("fresh_sampler shared by threads never hands out a point twice") {
     const bc::space s(40, composition(5, 0), composition(5, 14));
     const std::uint64_t size = s.size().to_u64();

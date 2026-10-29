@@ -79,6 +79,16 @@ def test_region_sequences_stay_inside_and_resume(small):
             assert all(kid.contains(small.rank(x)) for x in q.take(20))
 
 
+def test_region_sequences_of_a_wide_space_stay_inside():
+    # The space takes 96 bits, the subtree 9; its first rank is above 2^64.
+    s = bc.Space(100, [0] * 30, [100] * 30)
+    r = bc.subtree(s, [60, 20, 10, 5, 3])
+    assert r.begin >= 2**64 and r.size < 512
+    for q in (bc.iid_sequence(s, 7, r), bc.rank_sequence(s, r, seed=7), bc.coordinate_sequence(s, r, seed=7)):
+        n = min(200, q.capacity)
+        assert all(r.contains(s.rank(x)) for x in q.points(0, n))
+
+
 def test_kinds_and_repr(small):
     assert [q.kind for q in sequences(small)] == [
         "rank", "rank", "scaled_rank", "iid", "coordinate", "coordinate"]

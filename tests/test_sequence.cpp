@@ -239,6 +239,23 @@ TEST_CASE("concurrent take on one sequence hands out disjoint consecutive ranges
     CHECK(std::equal(out.begin(), out.begin() + static_cast<long>(taken * 2), reference.begin()));
 }
 
+TEST_CASE("region sequences of a space wider than 64 bits stay in their region") {
+    // The space takes 96 bits, the subtree 9; its first rank is above 2^64.
+    const bc::space s(100, std::vector<std::int32_t>(30, 0), std::vector<std::int32_t>(30, 100));
+    const bc::region r = bc::subtree(s, {60, 20, 10, 5, 3});
+    REQUIRE(r.begin().bit_length() > 64);
+    REQUIRE(r.size() < natural(512));
+    for (const bc::sequence& q : {bc::iid_sequence(s, r, 7), bc::rank_sequence(s, r, 7),
+                                  bc::coordinate_sequence(s, r, 7)}) {
+        const std::uint64_t count = std::min<std::uint64_t>(200, q.capacity());
+        std::vector<std::int32_t> out(count * s.parts());
+        q.points(0, count, out.data());
+        for (std::uint64_t p = 0; p < count; ++p) {
+            REQUIRE(r.contains(s.rank(out.data() + p * s.parts())));
+        }
+    }
+}
+
 TEST_CASE("iid draws are uniform over the ranks") {
     // C(9, 3) = 84 compositions; 500 expected hits each.
     const bc::space s(6, std::vector<std::int32_t>(4, 0), std::vector<std::int32_t>(4, 6));

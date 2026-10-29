@@ -165,11 +165,17 @@ void ranks_block(void* context, std::uint64_t block) {
         std::int32_t* pts = job.points + first * parts;
         d.write_decoded_points(job.begin + first, n, pts);
         const k::space_view v = d.dom.view();
+        // The kernel ranks into row 0's width, which can exceed the size's:
+        // row 0 holds prefix sums over every total up to the space's. A rank
+        // is below the size, so the limbs past job.width are zero.
+        std::vector<k::limb> full(static_cast<std::size_t>(std::max(v.row_limbs[0], job.width)));
         for (std::uint64_t p = 0; p < n; ++p) {
-            if (k::rank(v, pts + p * parts, job.ranks + (first + p) * w, job.width) !=
+            if (k::rank(v, pts + p * parts, full.data(), static_cast<int>(full.size())) !=
                 k::status::ok) {
                 throw std::logic_error("bounded_compositions: a decoded point is not in the space");
             }
+            k::limbs_copy(full.data(), static_cast<int>(full.size()), job.ranks + (first + p) * w,
+                          job.width);
         }
     } else {
         for (std::uint64_t p = 0; p < n; ++p) {
