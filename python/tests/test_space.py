@@ -87,6 +87,46 @@ def test_subspaces_pickle_as_the_same_space():
         assert [y.tolist() for y in back] == [y.tolist() for y in sub]
 
 
+def test_gaps_match_brute_force_and_pickle():
+    rng = np.random.default_rng(5)
+    for _ in range(100):
+        n = int(rng.integers(2, 5))
+        lower = [int(v) for v in rng.integers(-2, 2, n)]
+        upper = [v + int(rng.integers(0, 7)) for v in lower]
+        total = int(rng.integers(sum(lower), sum(upper) + 1))
+        gaps = []
+        for _ in range(int(rng.integers(0, 4))):
+            first = int(rng.integers(-3, 6))
+            gaps.append((int(rng.integers(0, n)), first, first + int(rng.integers(0, 3))))
+        s = bc.Space(total, lower, upper, min_count=int(rng.integers(0, 2)), gaps=gaps)
+        expected = brute_force(total, lower, upper, min_count=s.min_count, gaps=gaps)
+        assert [x.tolist() for x in s] == expected
+        back = pickle.loads(pickle.dumps(s))
+        assert back.gaps == s.gaps and back.size == s.size
+        if expected and s.parts > 1:
+            sub = s.subspace(expected[-1][:1])
+            again = pickle.loads(pickle.dumps(sub))
+            assert again.gaps == sub.gaps
+            assert [y.tolist() for y in again] == [y.tolist() for y in sub]
+
+
+def test_gaps_are_normalized_and_checked():
+    s = bc.Space(6, [0, 0, 0], [6, 6, 6], gaps=[(1, 4, 9), (1, 2, 3), (0, -5, -1), (2, 0, 0)])
+    assert s.gaps == [(1, 2, 6), (2, 0, 0)]
+    assert bc.Space(6, [0, 0, 0], [6, 6, 6]).gaps == []
+    # A state pickled before gaps existed has eight entries.
+    state = s.__getstate__()[:8]
+    old = bc.Space.__new__(bc.Space)
+    old.__setstate__(state)
+    assert old.gaps == [] and old.size == bc.Space(6, [0, 0, 0], [6, 6, 6]).size
+    with pytest.raises(ValueError, match="out of range"):
+        bc.Space(6, [0, 0, 0], [6, 6, 6], gaps=[(3, 0, 1)])
+    with pytest.raises(ValueError, match="above its last"):
+        bc.Space(6, [0, 0, 0], [6, 6, 6], gaps=[(0, 2, 1)])
+    with pytest.raises(TypeError):
+        bc.Space(6, [0, 0, 0], [6, 6, 6], gaps=[(0, 2)])
+
+
 def test_bad_input():
     with pytest.raises(TypeError):
         bc.Space(5, [0, 0], [2.5, 3])

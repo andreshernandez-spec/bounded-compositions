@@ -25,8 +25,9 @@ struct space_data {
     std::vector<std::int32_t> cap, cap_suffix;
     support_limits support;
     std::vector<group_limit> groups;
+    std::vector<part_gap> gaps;  // normalized
     // See kernel::space_view.
-    std::vector<std::int32_t> seg, segs;
+    std::vector<std::int32_t> seg, seg_start, segs;
     std::vector<std::int32_t> row_layers;
     std::vector<std::int64_t> row_layer_start;
     std::vector<std::int32_t> row_open_start, row_open, act_start, act, grp_lo, grp_hi;
@@ -276,36 +277,55 @@ void build_log_table(detail::space_data& d, std::int32_t shifted_total) {
     d.log_size = S[start(0, 0) * stride + static_cast<std::size_t>(shifted_total)];
 }
 
-// Splits each part's values into segments (kernel::space_view): below zero,
-// zero, above zero, leaving out a semicontinuous part's gap, with step 1 for
-// nonzero values when the count is limited. Merges neighbours with equal steps.
+// Splits each part's allowed values into segments (kernel::space_view): the
+// bounds less the semicontinuous gap and the given gaps, split at zero, with
+// step 1 for nonzero values when the count is limited. Merges neighbours with
+// equal steps. d.gaps must be normalized.
 void set_segments(detail::space_data& d, bool count_limited) {
     const std::size_t n = d.cap.size();
-    d.seg.assign(9 * n, 0);
+    d.seg.clear();
+    d.seg_start.assign(n, 0);
     d.segs.assign(n, 0);
+    std::size_t gaps_end = 0;
     for (std::size_t i = 0; i < n; ++i) {
         const std::int64_t lo = d.lower[i], hi = d.upper[i];
-        const std::int64_t gap = d.support.min_size.empty() ? 1 : d.support.min_size[i];
+        const std::int64_t min_size = d.support.min_size.empty() ? 1 : d.support.min_size[i];
         const std::int32_t step = count_limited ? 1 : 0;
-        std::int64_t ranges[3][3] = {
-            {lo, std::min(hi, -gap), step},
+        const std::int64_t classes[3][3] = {
+            {lo, std::min(hi, -min_size), step},
             {std::max(lo, std::int64_t{0}), std::min(hi, std::int64_t{0}), 0},
-            {std::max(lo, gap), hi, step}};
-        int g = 0;
-        for (const auto& q : ranges) {
-            if (q[0] > q[1]) continue;
-            std::int32_t* out = &d.seg[9 * i];
-            if (g > 0 && out[3 * (g - 1) + 2] == q[2] &&
-                out[3 * (g - 1) + 1] + d.lower[i] + 1 == q[0]) {
-                out[3 * (g - 1) + 1] = static_cast<std::int32_t>(q[1] - lo);
-                continue;
-            }
-            out[3 * g] = static_cast<std::int32_t>(q[0] - lo);
-            out[3 * g + 1] = static_cast<std::int32_t>(q[1] - lo);
-            out[3 * g + 2] = static_cast<std::int32_t>(q[2]);
-            ++g;
+            {std::max(lo, min_size), hi, step}};
+        const std::size_t gaps_begin = gaps_end;
+        while (gaps_end < d.gaps.size() && d.gaps[gaps_end].part == static_cast<std::int32_t>(i)) {
+            ++gaps_end;
         }
-        d.segs[i] = g;
+        const std::size_t first_seg = d.seg.size() / 3;
+        d.seg_start[i] = static_cast<std::int32_t>(first_seg);
+        auto add = [&](std::int64_t first, std::int64_t last, std::int64_t seg_step) {
+            if (first > last) return;
+            const std::size_t back = d.seg.size();
+            if (back / 3 > first_seg && d.seg[back - 1] == seg_step &&
+                d.seg[back - 2] + lo + 1 == first) {
+                d.seg[back - 2] = static_cast<std::int32_t>(last - lo);
+                return;
+            }
+            d.seg.push_back(static_cast<std::int32_t>(first - lo));
+            d.seg.push_back(static_cast<std::int32_t>(last - lo));
+            d.seg.push_back(static_cast<std::int32_t>(seg_step));
+        };
+        // Each class less this part's gaps, which are sorted and disjoint.
+        for (const auto& q : classes) {
+            std::int64_t from = q[0];
+            for (std::size_t e = gaps_begin; e < gaps_end && from <= q[1]; ++e) {
+                const part_gap& z = d.gaps[e];
+                if (z.last < from) continue;
+                if (z.first > q[1]) break;
+                add(from, std::min<std::int64_t>(q[1], std::int64_t{z.first} - 1), q[2]);
+                from = std::int64_t{z.last} + 1;
+            }
+            add(from, q[1], q[2]);
+        }
+        d.segs[i] = static_cast<std::int32_t>(d.seg.size() / 3 - first_seg);
     }
 }
 
@@ -416,6 +436,40 @@ bool set_groups(detail::space_data& d, std::int32_t shifted_total, std::int32_t 
     return feasible;
 }
 
+// The gaps clipped to the bounds, sorted by part and first value, with
+// overlapping and adjacent ones merged and empty ones dropped (part_gap).
+std::vector<part_gap> normalized_gaps(const std::vector<part_gap>& gaps, const std::int32_t* lower,
+                                      const std::int32_t* upper, std::size_t parts) {
+    std::vector<part_gap> clipped;
+    for (const part_gap& z : gaps) {
+        if (z.part < 0 || static_cast<std::size_t>(z.part) >= parts) {
+            throw std::invalid_argument("bounded_compositions::space: gap part " +
+                                        std::to_string(z.part) + " is out of range");
+        }
+        if (z.first > z.last) {
+            throw std::invalid_argument(
+                "bounded_compositions::space: a gap's first value is above its last at part " +
+                std::to_string(z.part));
+        }
+        const std::size_t u = static_cast<std::size_t>(z.part);
+        const part_gap c{z.part, std::max(z.first, lower[u]), std::min(z.last, upper[u])};
+        if (c.first <= c.last) clipped.push_back(c);
+    }
+    std::sort(clipped.begin(), clipped.end(), [](const part_gap& a, const part_gap& b) {
+        return a.part != b.part ? a.part < b.part : a.first < b.first;
+    });
+    std::vector<part_gap> out;
+    for (const part_gap& z : clipped) {
+        if (!out.empty() && out.back().part == z.part &&
+            std::int64_t{out.back().last} + 1 >= z.first) {
+            out.back().last = std::max(out.back().last, z.last);
+        } else {
+            out.push_back(z);
+        }
+    }
+    return out;
+}
+
 void check_support(const support_limits& support, std::size_t parts) {
     if (support.min_count < 0 || support.max_count < 0 || support.min_count > support.max_count) {
         throw std::invalid_argument(
@@ -440,6 +494,7 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
                                                     const std::int32_t* upper, std::size_t parts,
                                                     const support_limits& support,
                                                     const std::vector<group_limit>& groups,
+                                                    const std::vector<part_gap>& gaps,
                                                     counting mode) {
     if (parts == 0) throw std::invalid_argument("bounded_compositions::space: no parts");
     if (parts > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max() - 1)) {
@@ -488,6 +543,7 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
     check_support(support, parts);
     d->support = support;
     d->groups = groups;
+    d->gaps = normalized_gaps(gaps, lower, upper, parts);
     const std::int32_t n32 = static_cast<std::int32_t>(parts);
     const bool count_limited = support.min_count > 0 || support.max_count < n32;
     const std::int32_t support_layers = count_limited ? std::min(support.max_count, n32) + 1 : 1;
@@ -495,7 +551,8 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
     if (!set_groups(*d, shifted_total, support_layers)) feasible = false;
     bool plain = !count_limited && groups.empty();
     for (std::size_t i = 0; i < parts && plain; ++i) {
-        plain = d->segs[i] == 1 && d->seg[9 * i] == 0 && d->seg[9 * i + 1] == d->cap[i];
+        const std::size_t first = 3 * static_cast<std::size_t>(d->seg_start[i]);
+        plain = d->segs[i] == 1 && d->seg[first] == 0 && d->seg[first + 1] == d->cap[i];
     }
 
     // cap_suffix[i] = min(shifted_total, cap[i] + ... + cap[n-1]).
@@ -508,6 +565,7 @@ std::shared_ptr<const detail::space_data> make_data(std::int32_t total, const st
 
     k::space_view& v = d->view;
     v.seg = d->seg.data();
+    v.seg_start = d->seg_start.data();
     v.segs = d->segs.data();
     v.support_layers = support_layers;
     v.layer_base = 0;
@@ -620,34 +678,49 @@ std::int32_t remaining_limit(std::int32_t limit, std::int64_t taken, std::int64_
 space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
              const std::vector<std::int32_t>& upper, counting mode) {
     check_same_length(lower.size(), upper.size());
-    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support_limits{}, {}, mode);
+    data_ =
+        make_data(total, lower.data(), upper.data(), lower.size(), support_limits{}, {}, {}, mode);
 }
 
 space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
              std::size_t parts, counting mode)
-    : data_(make_data(total, lower, upper, parts, support_limits{}, {}, mode)) {}
+    : data_(make_data(total, lower, upper, parts, support_limits{}, {}, {}, mode)) {}
 
 space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
              const std::vector<std::int32_t>& upper, const support_limits& support, counting mode) {
     check_same_length(lower.size(), upper.size());
-    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, {}, mode);
+    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, {}, {}, mode);
 }
 
 space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
              std::size_t parts, const support_limits& support, counting mode)
-    : data_(make_data(total, lower, upper, parts, support, {}, mode)) {}
+    : data_(make_data(total, lower, upper, parts, support, {}, {}, mode)) {}
 
 space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
              const std::vector<std::int32_t>& upper, const support_limits& support,
              const std::vector<group_limit>& groups, counting mode) {
     check_same_length(lower.size(), upper.size());
-    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, groups, mode);
+    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, groups, {}, mode);
 }
 
 space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
              std::size_t parts, const support_limits& support,
              const std::vector<group_limit>& groups, counting mode)
-    : data_(make_data(total, lower, upper, parts, support, groups, mode)) {}
+    : data_(make_data(total, lower, upper, parts, support, groups, {}, mode)) {}
+
+space::space(std::int32_t total, const std::vector<std::int32_t>& lower,
+             const std::vector<std::int32_t>& upper, const support_limits& support,
+             const std::vector<group_limit>& groups, const std::vector<part_gap>& gaps,
+             counting mode) {
+    check_same_length(lower.size(), upper.size());
+    data_ = make_data(total, lower.data(), upper.data(), lower.size(), support, groups, gaps, mode);
+}
+
+space::space(std::int32_t total, const std::int32_t* lower, const std::int32_t* upper,
+             std::size_t parts, const support_limits& support,
+             const std::vector<group_limit>& groups, const std::vector<part_gap>& gaps,
+             counting mode)
+    : data_(make_data(total, lower, upper, parts, support, groups, gaps, mode)) {}
 
 std::size_t space::parts() const noexcept { return data_->lower.size(); }
 std::int32_t space::total() const noexcept { return data_->total; }
@@ -655,6 +728,7 @@ const std::vector<std::int32_t>& space::lower() const noexcept { return data_->l
 const std::vector<std::int32_t>& space::upper() const noexcept { return data_->upper; }
 const support_limits& space::support() const noexcept { return data_->support; }
 const std::vector<group_limit>& space::groups() const noexcept { return data_->groups; }
+const std::vector<part_gap>& space::gaps() const noexcept { return data_->gaps; }
 counting space::counting_mode() const noexcept { return data_->mode; }
 
 const natural& space::size() const {
@@ -749,9 +823,14 @@ space space::subspace(const std::vector<std::int32_t>& prefix) const {
     sub->upper.assign(data_->upper.begin() + static_cast<std::ptrdiff_t>(d), data_->upper.end());
     sub->support = rest;
     sub->groups = std::move(rest_groups);
+    // Normalized gaps stay normalized with their parts renumbered.
+    for (const part_gap& z : data_->gaps) {
+        if (static_cast<std::size_t>(z.part) < d) continue;
+        sub->gaps.push_back({z.part - static_cast<std::int32_t>(d), z.first, z.last});
+    }
     k::space_view& sv = sub->view;
     sv = v;  // same tables; rows and parts shifted by d
-    sv.seg = v.seg + 9 * d;
+    sv.seg_start = v.seg_start + d;
     sv.segs = v.segs + d;
     sv.lo = v.lo + d;
     sv.cap = v.cap + d;

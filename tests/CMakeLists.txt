@@ -18,6 +18,7 @@ add_executable(bounded_compositions_tests
   test_coordinate.cpp
   test_executor.cpp
   test_fresh.cpp
+  test_gaps.cpp
   test_groups.cpp
   test_limbs.cpp
   test_log_counting.cpp

@@ -84,7 +84,7 @@ namespace detail {
 
 bool same_space(const space& a, const space& b) {
     return a.total() == b.total() && a.lower() == b.lower() && a.upper() == b.upper() &&
-           a.support() == b.support() && a.groups() == b.groups();
+           a.support() == b.support() && a.groups() == b.groups() && a.gaps() == b.gaps();
 }
 
 void require_domain(const space& s, const region& r, const char* what) {

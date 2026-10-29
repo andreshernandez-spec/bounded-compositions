@@ -27,11 +27,12 @@ decoding each point to a composition.
 
 ## APIs
 
-- `Space(total, lower, upper, *, min_count=0, max_count=None, min_size=None, groups=())`:
+- `Space(total, lower, upper, *, min_count=0, max_count=None, min_size=None, groups=(), gaps=None)`:
   the compositions of `total` with `lower[i] <= x[i] <= upper[i]`, between
   `min_count` and `max_count` nonzero parts, part `i` zero or at least
-  `min_size[i]` in size, and each `Group(parts, min_sum, max_sum)` keeping its
-  parts' sum in range.
+  `min_size[i]` in size, each `Group(parts, min_sum, max_sum)` keeping its
+  parts' sum in range, and no part in one of its gaps, given as
+  `(part, first, last)` triples.
 - `CompositionSampler(space, *, prefix="x", kind="rank", scramble=True, seed=None, independent_sampler=None)`:
   trial number t gets point t of a `"rank"`, `"coordinate"` (Sobol, spreads
   every part) or `"iid"` sequence. Give every worker of a distributed study
