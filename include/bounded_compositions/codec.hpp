@@ -15,6 +15,7 @@
 #ifndef BCOMP_CODEC_HPP
 #define BCOMP_CODEC_HPP
 
+#include <cstddef>
 #include <cstdint>
 
 #include "bounded_compositions/space.hpp"
@@ -26,6 +27,14 @@ namespace bounded_compositions {
 void decode(const space& s, const double* u, std::int32_t* out);
 // The same with u[i] as 64-bit fractions u[i] / 2^64.
 void decode(const space& s, const std::uint64_t* u, std::int32_t* out);
+// decode for `points` points: point p's coordinates in
+// u[p * (parts() - 1), (p + 1) * (parts() - 1)), its composition written to
+// out[p * parts(), (p + 1) * parts()). The results are those of decoding the
+// points one by one; with exact counting the points are walked together, so
+// their table reads overlap. Throws as decode does, after which out is
+// unspecified.
+void decode(const space& s, const double* u, std::size_t points, std::int32_t* out);
+void decode(const space& s, const std::uint64_t* u, std::size_t points, std::int32_t* out);
 
 // Writes parts() - 1 coordinates. Throws std::invalid_argument if x is not in
 // the space, and std::domain_error if no code of the representation decodes

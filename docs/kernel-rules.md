@@ -6,6 +6,10 @@ meant to compile unchanged as GPU device code later (CUDA, HIP or SYCL), and
 it is shared by every host thread. So it follows stricter rules than the rest
 of the library.
 
+Host code may interleave the kernel calls of several points to overlap their
+table reads (`src/walk_batch.cpp`); the kernel functions themselves stay per
+point, which is what a device thread runs.
+
 These rules specialize the repository's [architecture](architecture.md) and
 [coding style](coding-style.md). They apply to kernel headers regardless of
 which build system or caller uses them.

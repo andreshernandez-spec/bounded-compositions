@@ -9,6 +9,7 @@
 
 #include "bounded_compositions/kernel/walk.hpp"
 #include "counts.hpp"
+#include "walk_batch.hpp"
 
 namespace bounded_compositions {
 
@@ -175,6 +176,27 @@ void decode(const space& s, const double* u, std::int32_t* out) {
     std::vector<std::uint64_t> fixed(static_cast<std::size_t>(dims_of(s)));
     for (int i = 0; i < dims_of(s); ++i) fixed[static_cast<std::size_t>(i)] = to_fraction(u[i], i);
     decode(s, fixed.data(), out);
+}
+
+void decode(const space& s, const std::uint64_t* u, std::size_t points, std::int32_t* out) {
+    const std::size_t dims = s.parts() - 1;
+    if (detail::decode_points(s.view(), u, dims, points, out, s.parts()) != k::status::ok) {
+        throw std::out_of_range("bounded_compositions::decode: the space is empty");
+    }
+}
+
+void decode(const space& s, const double* u, std::size_t points, std::int32_t* out) {
+    // Converted in chunks, so the copy stays small whatever the input.
+    constexpr std::size_t chunk = 256;
+    const std::size_t dims = s.parts() - 1;
+    std::vector<std::uint64_t> fixed(std::min(chunk, points) * dims);
+    for (std::size_t p = 0; p < points; p += chunk) {
+        const std::size_t m = std::min(chunk, points - p);
+        for (std::size_t e = 0; e < m * dims; ++e) {
+            fixed[e] = to_fraction(u[p * dims + e], static_cast<int>(e % dims));
+        }
+        decode(s, fixed.data(), m, out + p * s.parts());
+    }
 }
 
 void encode(const space& s, const std::int32_t* x, std::uint64_t* u) {

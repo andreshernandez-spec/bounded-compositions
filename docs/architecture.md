@@ -25,6 +25,14 @@ or external libraries. Host code must not depend on Python or an optimizer.
 The C++ core uses C++17 and the standard library; test and Python build
 dependencies are separate.
 
+Kernel functions handle one point each. Host code that produces many points
+(sequences, the multi-point `decode`) walks them 16 at a time in
+`src/walk_batch.cpp`: each part's setup (`part_window`, `log_part_window`) runs
+per point, then the points' searches advance together through branch-free
+steps (`search_step`, `log_search_step`), so their table reads overlap instead
+of waiting on each other. The results equal the one-point walks
+(`tests/test_walk_batch.cpp`).
+
 The kernel layer is header-only. The host is compiled, with private headers
 under `src/`. Public headers expose non-template library types; standard-library
 types in their interfaces do not make the library header-only. Private host

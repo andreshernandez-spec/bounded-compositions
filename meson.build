@@ -22,7 +22,8 @@ bounded_compositions_sources = files(
   'src/sobol.cpp',
   'src/sobol_directions.cpp',
   'src/space.cpp',
-  'src/version.cpp')
+  'src/version.cpp',
+  'src/walk_batch.cpp')
 
 bounded_compositions_lib = library('bounded_compositions',
   bounded_compositions_sources,
@@ -81,6 +82,7 @@ if not meson.is_subproject() and not get_option('tests').disabled()
       'tests/test_smoke.cpp',
       'tests/test_space.cpp',
       'tests/test_support.cpp',
+      'tests/test_walk_batch.cpp',
       include_directories: include_directories('src'),
       dependencies: [bounded_compositions_dep, catch2])
     test('bounded_compositions_tests', tests, timeout: 300)

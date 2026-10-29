@@ -141,14 +141,69 @@ BCOMP_KERNEL std::int32_t search_segment(const space_view& s, int i, std::int32_
     return a;
 }
 
+// One halving of search_segment's search, without a branch on the comparison,
+// so that several searches can run interleaved and their table reads overlap.
+// The value lies in [*base, *base + *len), *len >= 1, inside a segment's
+// values [a, b] with b <= k, and the predicate P[k - v - 1] < t is false below
+// it and true from it on. The step probes v = *base + *len / 2 - 1 <= b - 1,
+// so k - v - 1 >= 0. row points at P[i+1][cn][0], entries of wn limbs, and t
+// is at most P[i+1][cn][k - *base], so wn limbs hold it. At *len == 1 the step
+// reads the entry at k - *base and changes nothing.
+BCOMP_KERNEL void search_step(const limb* row, int wn, std::int32_t k, const limb* t,
+                              std::int32_t* base, std::int32_t* len) {
+    const std::int32_t half = *len / 2;
+    const limb* e = row + static_cast<std::int64_t>(k - (*base + half - 1) - 1) * wn;
+    // The top limbs nearly always differ; compare the rest only when not.
+    bool below = e[wn - 1] < t[wn - 1];
+    if (e[wn - 1] == t[wn - 1]) below = limbs_cmp(e, wn - 1, t, wn - 1) < 0;
+    *base += below ? 0 : half;
+    *len -= half;
+}
+
+// The segment of part i, in state (k, c), whose values' completions hold
+// position r < N[i][k][c] (w limbs), values counted in increasing order.
+// Writes the segment's values [*a, *b], the layer they lead to, and
+// t = P[i+1][layer][k - a] minus the position inside the segment to
+// t[0..max(w, row_limbs[i + 1])). Inside a segment, value v's completions are
+// N[i+1][k - v][layer], so the ones of the segment's values below v sum to
+// P[i+1][layer][k - a] - P[i+1][layer][k - v]: v holds r exactly when
+// P[k - v - 1] < t <= P[k - v], so the search for v needs comparisons only
+// (search_segment, search_step). Returns false if r is too large.
+BCOMP_KERNEL bool part_window(const space_view& s, int i, std::int32_t k, std::int32_t c,
+                              const limb* r, int w, std::int32_t* a, std::int32_t* b,
+                              std::int32_t* layer, limb* t) {
+    const int wn = s.row_limbs[i + 1];
+    const int wt = w > wn ? w : wn;
+    if (s.segs[i] == 1) {
+        // The only segment holds every r below N[i][k][c].
+        if (!move(s, i, 0, k, c, a, b, layer)) return false;
+        limbs_sub(table_entry(s, i + 1, *layer, k - *a), wn, r, w, t, wt);
+        return true;
+    }
+    limb left[max_limbs];  // r minus the completions of the segments passed
+    limbs_copy(r, w, left, wt);
+    for (int g = 0; g < s.segs[i]; ++g) {
+        if (!move(s, i, g, k, c, a, b, layer)) continue;
+        const limb* top = table_entry(s, i + 1, *layer, k - *a);
+        const limb* bottom = k - *b - 1 >= 0 ? table_entry(s, i + 1, *layer, k - *b - 1) : nullptr;
+        bool inside = false;
+        if (limbs_cmp(top, wn, left, wt) > 0) {
+            limbs_sub(top, wn, left, wt, t, wt);
+            inside = bottom == nullptr || limbs_cmp(bottom, wn, t, wt) < 0;
+        }
+        if (inside) return true;
+        // left -= P[k - a] - P[k - b - 1]
+        limbs_sub(left, wt, top, wn, left, wt);
+        if (bottom != nullptr) limbs_add(left, wt, bottom, wn, left, wt);
+    }
+    return false;
+}
+
 // The shifted value of part i, in state (k, c), whose completions hold
 // position r < N[i][k][c] (w limbs), values counted in increasing order.
 // Writes the next layer to *layer and, if rest is not null, r minus the
-// completions of the smaller values to rest[0..row_limbs[i + 1]). Inside a
-// segment, value v's completions are N[i+1][k - v][cn], so the ones of the
-// segment's values below v sum to P[i+1][cn][k - a] - P[i+1][cn][k - v]: with
-// T = P[k - a] - r, v holds r exactly when P[k - v - 1] < T <= P[k - v], and
-// the search needs comparisons only. Returns -1 if r is too large.
+// completions of the smaller values to rest[0..row_limbs[i + 1]). Returns -1
+// if r is too large.
 BCOMP_KERNEL std::int32_t part_value(const space_view& s, int i, std::int32_t k, std::int32_t c,
                                      const limb* r, int w, limb* rest, std::int32_t* layer) {
     const int wn = s.row_limbs[i + 1];
@@ -156,34 +211,9 @@ BCOMP_KERNEL std::int32_t part_value(const space_view& s, int i, std::int32_t k,
     limb t[max_limbs];
     std::int32_t a = 0, b = 0, cn = 0;
     *layer = -1;
-    if (s.segs[i] == 1) {
-        // The only segment holds every r below N[i][k][c].
-        if (!move(s, i, 0, k, c, &a, &b, &cn)) return -1;
-        limbs_sub(table_entry(s, i + 1, cn, k - a), wn, r, w, t, wt);
-        *layer = cn;
-        return search_segment(s, i, k, cn, a, b, t, wt, rest);
-    }
-    limb left[max_limbs];  // r minus the completions of the segments passed
-    limbs_copy(r, w, left, wt);
-    for (int g = 0; g < s.segs[i]; ++g) {
-        if (!move(s, i, g, k, c, &a, &b, &cn)) continue;
-        const limb* top = table_entry(s, i + 1, cn, k - a);
-        const limb* bottom = k - b - 1 >= 0 ? table_entry(s, i + 1, cn, k - b - 1) : nullptr;
-        bool inside = false;
-        if (limbs_cmp(top, wn, left, wt) > 0) {
-            limbs_sub(top, wn, left, wt, t, wt);
-            inside = bottom == nullptr || limbs_cmp(bottom, wn, t, wt) < 0;
-        }
-        if (!inside) {
-            // left -= P[k - a] - P[k - b - 1]
-            limbs_sub(left, wt, top, wn, left, wt);
-            if (bottom != nullptr) limbs_add(left, wt, bottom, wn, left, wt);
-            continue;
-        }
-        *layer = cn;
-        return search_segment(s, i, k, cn, a, b, t, wt, rest);
-    }
-    return -1;
+    if (!part_window(s, i, k, c, r, w, &a, &b, &cn, t)) return -1;
+    *layer = cn;
+    return search_segment(s, i, k, cn, a, b, t, wt, rest);
 }
 
 // part_value for a plain space (one segment 0..cap, one layer). It is small
@@ -461,103 +491,154 @@ BCOMP_KERNEL double log_segment(const space_view& s, int i, int g, std::int32_t 
     return log_window(s, i + 1, cn, k - b, k - a, nullptr);
 }
 
-// decode for the logarithmic counting mode. Part i picks a segment by its
-// share of N[i][k][c], then a value inside it: the segment's values [a, b]
-// are the window [k - b, k - a] of row i + 1 in its next layer (value v
-// leaves k - v), searched on the side with less mass outside it. A value
+// One part's search in decode_log. The value is the smallest v in [a, b] with
+// entries[offset - v] < bound on the prefix side, where entries is the
+// layer's log P row and offset k - 1, and entries[offset - v] > bound on the
+// suffix side, where entries is its log S row and offset k; b when there is
+// none. Either way the comparison turns true at one v and stays true above
+// it, since log P grows and log S shrinks along a row, so any order of probes
+// finds the same value.
+struct log_search {
+    std::int32_t a;
+    std::int32_t b;
+    std::int32_t layer;  // of row i + 1, where every value of [a, b] leads
+    std::int32_t offset;
+    std::int32_t prefix;  // 1 on the prefix side, 0 on the suffix side
+    const double* entries;
+    double bound;
+};
+
+// Part i's search in decode_log, from state (k, c) and the fraction u / 2^64.
+// The part picks a segment by its share of N[i][k][c], then a value inside
+// it: the segment's values [a, b] are the window [k - b, k - a] of row i + 1
+// in its next layer (value v leaves k - v), searched on the side with less
+// mass outside it. Returns false if no value of part i has a completion.
+BCOMP_KERNEL bool log_part_window(const space_view& s, int i, std::int32_t k, std::int32_t c,
+                                  limb u, log_search* q) {
+    const int row = i + 1;
+    // The segment whose cumulative share passes f, then f within it. A single
+    // segment holds everything.
+    double f = unit_fraction(u);
+    int g = 0;
+    if (s.segs[i] > 1) {
+        double mass[3] = {log_zero, log_zero, log_zero};
+        double whole = log_zero;
+        for (int h = 0; h < s.segs[i]; ++h) {
+            mass[h] = log_segment(s, i, h, k, c);
+            whole = log_add(whole, mass[h]);
+        }
+        g = -1;
+        int last = -1;
+        for (int h = 0; h < s.segs[i]; ++h) {
+            if (log_is_zero(mass[h])) continue;
+            last = h;
+            const double share = BCOMP_EXP(mass[h] - whole);
+            if (f < share) {
+                g = h;
+                f /= share;
+                break;
+            }
+            f -= share;
+        }
+        if (last < 0) return false;  // no completion at all
+        if (g < 0) {                 // rounding past the last segment
+            g = last;
+            f = 0x1.fffffffffffffp-1;
+        }
+    }
+    if (f >= 1.0) f = 0x1.fffffffffffffp-1;
+    if (!(f >= 0.0)) f = 0.0;
+
+    std::int32_t a = 0, b = 0, cn = 0;
+    if (!move(s, i, g, k, c, &a, &b, &cn)) return false;
+    q->a = a;
+    q->b = b;
+    q->layer = cn;
+    const std::int64_t start = (s.row_layer_start[row] + cn) * s.log_stride;
+    const double below = log_prefix_at(s, row, cn, k - b - 1);
+    const double above = log_suffix_at(s, row, cn, k - a + 1);
+    if (below <= above) {
+        // cum(v) = P[k - a] - P[k - v - 1] > f W  <=>  P[k - v - 1] < below + (1 - f) W
+        const double w = log_sub(log_prefix_at(s, row, cn, k - a), below);
+        q->entries = s.log_prefix + start;
+        q->offset = k - 1;
+        q->prefix = 1;
+        q->bound = log_add(below, BCOMP_LOG1P(-f) + w);
+    } else {
+        // cum(v) = S[k - v] - S[k - a + 1] > f W  <=>  S[k - v] > above + f W
+        const double w = log_sub(log_suffix_at(s, row, cn, k - b), above);
+        q->entries = s.log_suffix + start;
+        q->offset = k;
+        q->prefix = 0;
+        q->bound = f > 0.0 ? log_add(above, BCOMP_LOG(f) + w) : above;
+    }
+    return true;
+}
+
+// The comparison of a log_search at value v, a <= v <= b - 1 (offset - v is
+// then inside the row).
+BCOMP_KERNEL bool log_search_below(const log_search& q, std::int32_t v) {
+    // Both comparisons, then a select: lanes on different sides do not
+    // mispredict a branch.
+    const double x = q.entries[q.offset - v];
+    const bool less = x < q.bound;
+    const bool more = x > q.bound;
+    return q.prefix != 0 ? less : more;
+}
+
+// One halving of a log_search without a branch on the comparison, as
+// search_step: the value lies in [*base, *base + *len), *len >= 1, and the
+// step probes v = *base + *len / 2 - 1 <= b - 1.
+BCOMP_KERNEL void log_search_step(const log_search& q, std::int32_t* base, std::int32_t* len) {
+    const std::int32_t half = *len / 2;
+    *base += log_search_below(q, *base + half - 1) ? 0 : half;
+    *len -= half;
+}
+
+// The value decode_log keeps for part i once its search found v. A value
 // without completions is never kept: when rounding lands on one, the nearest
 // value in the segment that has completions is taken, so the result is always
 // valid.
+BCOMP_KERNEL std::int32_t log_part_value(const space_view& s, int i, std::int32_t k,
+                                         const log_search& q, std::int32_t v) {
+    const int row = i + 1;
+    if (s.plain != 0) {
+        // Without limits the values left with a completion are those that
+        // leave the later parts no more than they can hold.
+        const std::int32_t rest = s.cap_suffix[row];
+        return v < k - rest ? k - rest : v;
+    }
+    if (has_completion(s, row, q.layer, k - v)) return v;
+    for (std::int32_t d = 1; d <= q.b - q.a; ++d) {
+        if (v + d <= q.b && has_completion(s, row, q.layer, k - v - d)) return v + d;
+        if (v - d >= q.a && has_completion(s, row, q.layer, k - v + d)) return v - d;
+    }
+    return v;
+}
+
+// decode for the logarithmic counting mode, part by part: log_part_window,
+// the search, then log_part_value.
 BCOMP_KERNEL status decode_log(const space_view& s, const limb* u, std::int32_t* out) {
     if (s.feasible == 0) return status::out_of_range;
     std::int32_t k = s.total;
     std::int32_t c = s.layer_base;
     for (int i = 0; i + 1 < s.n; ++i) {
-        const int row = i + 1;
-        // The segment whose cumulative share passes f, then f within it. A
-        // single segment holds everything.
-        double f = unit_fraction(u[i]);
-        int g = 0;
-        if (s.segs[i] > 1) {
-            double mass[3] = {log_zero, log_zero, log_zero};
-            double whole = log_zero;
-            for (int h = 0; h < s.segs[i]; ++h) {
-                mass[h] = log_segment(s, i, h, k, c);
-                whole = log_add(whole, mass[h]);
-            }
-            g = -1;
-            int last = -1;
-            for (int h = 0; h < s.segs[i]; ++h) {
-                if (log_is_zero(mass[h])) continue;
-                last = h;
-                const double share = BCOMP_EXP(mass[h] - whole);
-                if (f < share) {
-                    g = h;
-                    f /= share;
-                    break;
-                }
-                f -= share;
-            }
-            if (last < 0) return status::invalid;  // no completion at all
-            if (g < 0) {                           // rounding past the last segment
-                g = last;
-                f = 0x1.fffffffffffffp-1;
+        log_search q = {};
+        if (!log_part_window(s, i, k, c, u[i], &q)) return status::invalid;
+        std::int32_t lo = q.a;
+        std::int32_t hi = q.b;
+        while (lo < hi) {
+            const std::int32_t mid = lo + (hi - lo) / 2;
+            if (log_search_below(q, mid)) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
             }
         }
-        if (f >= 1.0) f = 0x1.fffffffffffffp-1;
-        if (!(f >= 0.0)) f = 0.0;
-
-        std::int32_t a = 0, b = 0, cn = 0;
-        if (!move(s, i, g, k, c, &a, &b, &cn)) return status::invalid;
-        const double below = log_prefix_at(s, row, cn, k - b - 1);
-        const double above = log_suffix_at(s, row, cn, k - a + 1);
-        std::int32_t lo = a;
-        std::int32_t hi = b;
-        if (below <= above) {
-            // cum(v) = P[k - a] - P[k - v - 1] > f W  <=>  P[k - v - 1] < below + (1 - f) W
-            const double w = log_sub(log_prefix_at(s, row, cn, k - a), below);
-            const double t = log_add(below, BCOMP_LOG1P(-f) + w);
-            while (lo < hi) {
-                const std::int32_t mid = lo + (hi - lo) / 2;
-                if (log_prefix_at(s, row, cn, k - mid - 1) < t) {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
-            }
-        } else {
-            // cum(v) = S[k - v] - S[k - a + 1] > f W  <=>  S[k - v] > above + f W
-            const double w = log_sub(log_suffix_at(s, row, cn, k - b), above);
-            const double t = f > 0.0 ? log_add(above, BCOMP_LOG(f) + w) : above;
-            while (lo < hi) {
-                const std::int32_t mid = lo + (hi - lo) / 2;
-                if (log_suffix_at(s, row, cn, k - mid) > t) {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
-            }
-        }
-        if (s.plain != 0) {
-            // Without limits the values left with a completion are those that
-            // leave the later parts no more than they can hold.
-            const std::int32_t rest = s.cap_suffix[row];
-            if (lo < k - rest) lo = k - rest;
-        } else if (!has_completion(s, row, cn, k - lo)) {
-            for (std::int32_t d = 1; d <= b - a; ++d) {
-                if (lo + d <= b && has_completion(s, row, cn, k - lo - d)) {
-                    lo += d;
-                    break;
-                }
-                if (lo - d >= a && has_completion(s, row, cn, k - lo + d)) {
-                    lo -= d;
-                    break;
-                }
-            }
-        }
+        lo = log_part_value(s, i, k, q, lo);
         out[i] = lo + s.lo[i];
         k -= lo;
-        c = cn;
+        c = q.layer;
     }
     out[s.n - 1] = k + s.lo[s.n - 1];
     return status::ok;

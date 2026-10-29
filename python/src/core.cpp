@@ -325,13 +325,12 @@ void decode_block(void* context, std::uint64_t block) {
     const auto* j = static_cast<const decode_job*>(context);
     const std::size_t n = j->s->parts();
     const std::size_t d = n - 1;
-    const std::size_t end = std::min<std::size_t>(j->rows, (block + 1) * rows_per_block);
-    for (std::size_t r = block * rows_per_block; r < end; ++r) {
-        if (j->uf != nullptr) {
-            bc::decode(*j->s, j->uf + r * d, j->out + r * n);
-        } else {
-            bc::decode(*j->s, j->uu + r * d, j->out + r * n);
-        }
+    const std::size_t begin = block * rows_per_block;
+    const std::size_t end = std::min<std::size_t>(j->rows, begin + rows_per_block);
+    if (j->uf != nullptr) {
+        bc::decode(*j->s, j->uf + begin * d, end - begin, j->out + begin * n);
+    } else {
+        bc::decode(*j->s, j->uu + begin * d, end - begin, j->out + begin * n);
     }
 }
 
