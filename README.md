@@ -12,6 +12,7 @@ The goal is sampling that can be extended in place (the first N points are
 well spread for every N, and asking for more continues the same sequence), and
 that splits into regions that can be sampled independently.
 [docs/sampling.md](docs/sampling.md) explains the methods and measures them.
+[docs/evaluation.md](docs/evaluation.md) summarises a test on a practical problem.
 
 **Status: pre-alpha.** Counting, ranking, enumeration, sampling, repair and
 Python adapters are implemented. APIs and numerical contracts are still being
