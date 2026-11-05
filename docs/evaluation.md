@@ -1,20 +1,29 @@
 # Evaluation
 
-A pre-registered test of whether the library helps on a practical problem.
+A pre-registered test of whether the library helps on practical problems.
 The protocol, harness and raw records are kept in a separate repository;
 this page summarises them. The results hold for the problems, budgets and
 machine below.
 
 ## Setup
 
-- **Problem:** economic dispatch with valve-point costs. A power demand is
-  split across generating units whose cost curves have a ridge every few MW,
-  so the total cost has many local minima. Four instances from Pedroso, Kubo
+- **Economic dispatch** with valve-point costs. A power demand is split
+  across generating units whose cost curves have a ridge every few MW, so
+  the total cost has many local minima. Four instances from Pedroso, Kubo
   and Viana and from CEC 2011: 13 units at two demands, 40 units, and 140
-  units with 11 prohibited zones on 4 of them.
-- **Grid:** outputs on a 0.1 MW grid, so a dispatch is a bounded composition
-  and a prohibited zone is a gap. The exact grid optimum, by dynamic
-  programming over the units, is the ground truth; results are gaps to it.
+  units with 11 prohibited zones on 4 of them. Outputs are on a 0.1 MW grid,
+  so a dispatch is a bounded composition and a prohibited zone is a gap.
+  The exact grid optimum, by dynamic programming over the units, is the
+  ground truth; results are gaps to it.
+- **Cardinality-constrained portfolios** (Chang, Meade, Beasley and
+  Sharaiha 2000). Hold exactly 10 of n assets, each with at least 1%, and
+  minimise a weighted sum of risk and minus return, at three weightings.
+  Weights are in whole percent, so a portfolio is a composition of 100 with
+  exactly 10 nonzero parts. The OR-Library sets of 31 to 225 assets were
+  seen by an exploratory screen, so the criteria were judged on two larger
+  sets of the same kind, 457 and 1,317 assets. SCIP's lower bound is the
+  reference where it found one: it proved the optimum on 16 of the 21
+  problems, and found no bound on 1,317 assets.
 - **Runs:** about 150,000 evaluations per run (the CEC 2011 budget), 25 runs
   per method. Comparisons are two-sided Mann-Whitney U tests with Holm's
   adjustment, against criteria fixed before any run.
@@ -46,6 +55,14 @@ close to convex.
   beat the same budget spread evenly by a rank sequence on three of the four
   problems (median gap 3.19% to 2.71%, 2.12% to 1.65%, 12.58% to 12.23%; no
   significant difference on 40 units).
+- **Sampling by region success on portfolios.** The field's random
+  portfolios are drawn one asset at a time, each weight between 1% and what
+  leaves 1% for the assets still to come. With the assets ordered by mean
+  return, sampling by region success beat them on both held-out sets at all
+  three weightings. On 457 assets the median run ended 9.1, 28.9 and 28.5
+  above SCIP's bound against 63.9, 104.6 and 36.2 (in units of 1e-5). The
+  order matters: with the assets in file order it ended 463.6 above the
+  bound at the weighting that favours return most.
 - **Local search without repeats.** A prototype, not in the library: moves
   between pairs of units, never evaluating a composition twice. It beat the
   best of DE, PSO and CMA-ES on three of the four problems.
@@ -56,23 +73,36 @@ close to convex.
   one thread, at the cost of uniformity. The library's efficiency at 8
   threads is 41% to 62%, and on the 140-unit space the process pool is
   ahead at 8 threads too.
+- **Plain uniform sampling of portfolios.** At the two weightings that
+  favour return, the best portfolios are concentrated in one asset, and
+  uniform sampling rarely draws such portfolios. There the field's
+  one-asset-at-a-time draws did better.
 - **Spread sequences for random search.** Random search with the library's
   rank or Sobol sequences did no better than with independent draws (within
   0.2 percentage points of gap).
 - **The unit-cube codec for optimisers.** Mixed: better for DE, PSO and
   CMA-ES on one 13-unit problem and for PSO on 140 units, worse for DE and
   CMA-ES on 40 and 140 units and for all three on the other 13-unit problem.
-- **Regions combined with optimisers**, at a fixed total of evaluations with
-  64 evaluated per round:
-  - As a start: sampling by region success for a third of the budget, then
-    local search or CMA-ES from the best point, was no better than the
-    optimiser alone.
-  - As parallel workers: one optimiser per region, the round's 64
-    evaluations shared among the regions by success, never beat one
-    optimiser over the whole space. Local search put about 87% of its
+- **Regions combined with optimisers.**
+  - As a start on dispatch: sampling by region success for a third of the
+    budget, then local search or CMA-ES from the best point, was no better
+    than the optimiser alone.
+  - As a start on portfolios: sampling by region success for a third of
+    the budget, then the field's tabu search, made no difference on any
+    held-out problem. Tabu search from any of three starts (the best of the
+    field's first 1,024 or 49,984 random portfolios, or region sampling)
+    ended within 0.8 of the others (medians, in units of 1e-5), and closer
+    to the optimum than sampling alone did.
+  - As parallel workers sharing one budget: one optimiser per region, each
+    round's 64 evaluations shared among the regions by success, never beat
+    one optimiser over the whole space. Local search put about 87% of its
     evaluations into one region. With one worker per region and equal
     shares (an exploratory comparison), the loss was largest on the larger
     problems: on 140 units, 1.37% against 0.02% for local search.
+  - As parallel workers with a full budget each: 8 workers, each kept to
+    its own slice of the space, never beat 8 independent workers over the
+    whole space, and did worse in 5 of 8 comparisons. The good minima lay
+    in one slice, so in effect one worker searched where they were.
 
-Not tested: one optimiser per worker with a full budget of its own, the case
-where evaluations are cheap and the workers would otherwise idle.
+In no form tested did an optimiser run after or alongside sampling by
+region success end better than the same optimiser without it.
